@@ -1,8 +1,11 @@
 import { readFileSync } from "fs";
 import { join } from "path";
-import type Anthropic from "@anthropic-ai/sdk";
-import { getAnthropicClient, AGENT_MODEL } from "@/lib/anthropic";
-import { zodToToolSchema } from "@/lib/zod-tool";
+import type {
+  ChatCompletionCreateParamsNonStreaming,
+  ChatCompletionMessageParam,
+} from "openai/resources/chat/completions";
+import { getOpenRouterClient, EXTRACTION_MODEL, pdfParserPlugin } from "@/lib/openrouter";
+import { zodToResponseFormat } from "@/lib/json-schema";
 import { DocumentExtractionSchema, type DocumentExtraction } from "@/dsl/schema";
 
 const SYSTEM_PROMPT = readFileSync(
@@ -10,75 +13,70 @@ const SYSTEM_PROMPT = readFileSync(
   "utf-8",
 );
 
-const EXTRACTION_TOOL: Anthropic.Tool = {
-  name: "record_extraction",
-  description: "Record the structured extraction for this document.",
-  input_schema: zodToToolSchema(DocumentExtractionSchema),
-};
+const RESPONSE_FORMAT = zodToResponseFormat(DocumentExtractionSchema, "DocumentExtraction");
 
 /**
  * Runs one extraction pass over a single uploaded document.
  *
- * Uses Claude's native document support (PDFs are sent as base64 `document`
- * content blocks — the model reads the actual layout/tables/stamps, not a
- * pre-OCR'd text dump) rather than a separate PDF-parsing library. This
- * matters for exactly the kind of documents this system has actually
- * processed: bilingual Chinese/Indonesian contracts with tables, stamps,
- * and handwritten signatures that a naive text extractor mangles.
- *
- * @param fileBuffer raw bytes of the uploaded file
- * @param mimeType e.g. "application/pdf"
- * @param fileName for context in the prompt
+ * PDFs go through OpenRouter's universal `file-parser` plugin (mistral-ocr
+ * engine by default — see src/lib/openrouter.ts) rather than a native
+ * document content block: none of this app's default open-weight models
+ * read PDFs natively the way Claude/Gemini do, so OpenRouter parses the
+ * PDF server-side (OCR included) and hands the extraction model text/
+ * markdown regardless of which model is configured. This matters for
+ * exactly the documents this system was built against — bilingual
+ * Chinese/Indonesian contracts with tables, stamps, and handwritten
+ * signatures that a naive client-side text extractor mangles.
  */
 export async function extractFromDocument(
   fileBuffer: Buffer,
   mimeType: string,
   fileName: string,
 ): Promise<DocumentExtraction> {
-  const client = getAnthropicClient();
-
+  const client = getOpenRouterClient();
   const isPdf = mimeType === "application/pdf";
-  const contentBlock: Anthropic.Messages.ContentBlockParam = isPdf
-    ? {
-        type: "document",
-        source: {
-          type: "base64",
-          media_type: "application/pdf",
-          data: fileBuffer.toString("base64"),
-        },
-      }
-    : {
-        type: "text",
-        text: fileBuffer.toString("utf-8"),
-      };
 
-  const response = await client.messages.create({
-    model: AGENT_MODEL,
-    max_tokens: 4096,
-    system: SYSTEM_PROMPT,
-    tools: [EXTRACTION_TOOL],
-    tool_choice: { type: "tool", name: "record_extraction" },
-    messages: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text: `Document filename: ${fileName}\n\nExtract this document per the system prompt.`,
-          },
-          contentBlock,
-        ],
-      },
-    ],
-  });
+  // The "file" content part is an OpenRouter-specific extension (not in
+  // OpenAI's own content-part union), so the PDF branch is built as a
+  // plain object and cast once at the end, rather than fighting the SDK's
+  // discriminated per-role union type part-by-part.
+  const userMessage = (
+    isPdf
+      ? {
+          role: "user",
+          content: [
+            { type: "text", text: `Document filename: ${fileName}\n\nExtract this document per the system prompt.` },
+            {
+              type: "file",
+              file: {
+                filename: fileName,
+                file_data: `data:application/pdf;base64,${fileBuffer.toString("base64")}`,
+              },
+            },
+          ],
+        }
+      : {
+          role: "user",
+          content: `Document filename: ${fileName}\n\nExtract this document per the system prompt.\n\n${fileBuffer.toString("utf-8")}`,
+        }
+  ) as ChatCompletionMessageParam;
 
-  const toolUse = response.content.find((block) => block.type === "tool_use");
-  if (!toolUse || toolUse.type !== "tool_use") {
-    throw new Error(`Extraction agent did not return a tool_use block for ${fileName}`);
+  const params: ChatCompletionCreateParamsNonStreaming & { plugins?: readonly unknown[] } = {
+    model: EXTRACTION_MODEL,
+    response_format: RESPONSE_FORMAT,
+    messages: [{ role: "system", content: SYSTEM_PROMPT }, userMessage],
+    ...(isPdf ? { plugins: pdfParserPlugin() } : {}),
+  };
+
+  const response = await client.chat.completions.create(params);
+
+  const content = response.choices[0]?.message?.content;
+  if (!content) {
+    throw new Error(`Extraction agent returned no content for ${fileName}. Raw response: ${JSON.stringify(response)}`);
   }
 
   // Validate before returning — never trust the model's JSON blindly, even
-  // with forced tool use. This is the same "never fabricate/never trust
-  // without validation" discipline the manual skills enforce on themselves.
-  return DocumentExtractionSchema.parse(toolUse.input);
+  // in strict json_schema mode. This is the same "never fabricate/never
+  // trust without validation" discipline the manual skills enforce.
+  return DocumentExtractionSchema.parse(JSON.parse(content));
 }

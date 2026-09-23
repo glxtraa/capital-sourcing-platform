@@ -1,18 +1,12 @@
 import { readFileSync } from "fs";
 import { join } from "path";
-import type Anthropic from "@anthropic-ai/sdk";
-import { getAnthropicClient, AGENT_MODEL } from "@/lib/anthropic";
-import { zodToToolSchema } from "@/lib/zod-tool";
+import { getOpenRouterClient, BENCHMARK_MODEL } from "@/lib/openrouter";
+import { zodToResponseFormat } from "@/lib/json-schema";
 import { TermSheetOutputSchema, type TermSheetOutput } from "@/dsl/termsheet-schema";
 import type { Deal, Party, FinancingAsk, RiskFlag, Provider, ProviderMatch } from "@prisma/client";
 
 const SYSTEM_PROMPT = readFileSync(join(process.cwd(), "src/agents/prompts/benchmark.md"), "utf-8");
-
-const TOOL: Anthropic.Tool = {
-  name: "record_term_sheet",
-  description: "Record the lender-facing benchmark and recommended term sheet.",
-  input_schema: zodToToolSchema(TermSheetOutputSchema),
-};
+const RESPONSE_FORMAT = zodToResponseFormat(TermSheetOutputSchema, "TermSheetOutput");
 
 export interface BenchmarkInput {
   deal: Deal;
@@ -29,7 +23,7 @@ export interface BenchmarkInput {
  * and it's written for a different reader (see prompts/benchmark.md).
  */
 export async function runLenderBenchmark(input: BenchmarkInput): Promise<TermSheetOutput> {
-  const client = getAnthropicClient();
+  const client = getOpenRouterClient();
 
   const dealSummary = JSON.stringify(
     {
@@ -54,13 +48,11 @@ export async function runLenderBenchmark(input: BenchmarkInput): Promise<TermShe
     2,
   );
 
-  const response = await client.messages.create({
-    model: AGENT_MODEL,
-    max_tokens: 4096,
-    system: SYSTEM_PROMPT,
-    tools: [TOOL],
-    tool_choice: { type: "tool", name: "record_term_sheet" },
+  const response = await client.chat.completions.create({
+    model: BENCHMARK_MODEL,
+    response_format: RESPONSE_FORMAT,
     messages: [
+      { role: "system", content: SYSTEM_PROMPT },
       {
         role: "user",
         content:
@@ -71,9 +63,9 @@ export async function runLenderBenchmark(input: BenchmarkInput): Promise<TermShe
     ],
   });
 
-  const toolUse = response.content.find((b) => b.type === "tool_use");
-  if (!toolUse || toolUse.type !== "tool_use") {
-    throw new Error("Benchmark agent did not return a tool_use block.");
+  const content = response.choices[0]?.message?.content;
+  if (!content) {
+    throw new Error("Benchmark agent returned no content.");
   }
-  return TermSheetOutputSchema.parse(toolUse.input);
+  return TermSheetOutputSchema.parse(JSON.parse(content));
 }

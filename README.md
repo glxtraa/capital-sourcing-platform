@@ -20,8 +20,8 @@ works end-to-end.
 **Fully wired, will run as written:**
 - The database schema (`prisma/schema.prisma`) and the Zod DSL that validates against it
   (`src/dsl/`).
-- The extraction, research, and benchmark agents (`src/agents/`) — real Anthropic API calls,
-  real prompts, real structured-output validation.
+- The extraction, research, and benchmark agents (`src/agents/`) — real OpenRouter API calls
+  (open-weight models, one API key), real prompts, real structured-output validation.
 - The durable multi-step pipeline and feedback loop (`src/inngest/functions/`) — extraction →
   matching → (if nothing matches) research → matching again.
 - Every API route and UI page.
@@ -40,23 +40,23 @@ works end-to-end.
   gating factors, recurring-vs-one-off framing, etc." Wiring an LLM call into that step (same
   pattern as `benchmark-agent.ts`) is the natural next addition; left as mechanical-only here to
   keep the pipeline's control flow legible in a first read.
-- **File-type coverage**: the extraction agent sends PDFs to Claude as native `document` blocks
-  and everything else as raw UTF-8 text. A scanned image, a `.docx`, or a non-UTF-8 file will
-  need a conversion step first.
+- **File-type coverage**: the extraction agent sends PDFs through OpenRouter's universal
+  `file-parser` plugin (works even for non-multimodal models) and everything else as raw UTF-8
+  text. A `.docx` or a non-UTF-8 file will need a conversion step first.
 
 ## Architecture
 
 ```
 Upload (UI) → Vercel Blob → UploadedDocument rows → deal/documents.uploaded event
-    → [Inngest] extractDeal: per-file extraction (Claude, forced tool-use) → merge → DealSpec
+    → [Inngest] extractDeal: per-file extraction (OpenRouter, strict JSON schema) → merge → DealSpec
         → if confident: deal/matching.requested
     → [Inngest] matchProviders: mechanical eligibility filter (TS port of the manual
        query_providers.py) against the Provider table
         → if zero eligible: provider/research.requested  (the feedback loop)
-            → [Inngest] researchProviders: Claude + web_search tool → new Provider row
+            → [Inngest] researchProviders: OpenRouter + `web` plugin → structure → new Provider row
                 → re-fires deal/matching.requested
         → else: write ProviderMatch rows, deal.status = COMPLETE
-    → (on demand, from the UI) runLenderBenchmark: Claude call over the deal + its matches
+    → (on demand, from the UI) runLenderBenchmark: OpenRouter call over the deal + its matches
        → TermSheet row
 ```
 
@@ -65,11 +65,36 @@ steps to retry/resume independently — a single Vercel serverless function has 
 no built-in step memoization. Inngest functions still deploy as ordinary Vercel functions (see
 `src/app/api/inngest/route.ts`); Trigger.dev is a reasonable alternative if you'd rather use that.
 
-**Why Claude reads PDFs directly instead of a separate PDF-parsing library.** The actual
-documents this system was built against — bilingual Chinese/Indonesian coal contracts with
-tables, stamps, and handwritten signatures — are exactly the kind of document a naive
-text-extraction library mangles. Sending the PDF bytes straight to the model as a `document`
-content block lets it read the real layout.
+**Why OpenRouter instead of a single model provider's own SDK.** One API key covers every model
+below (and hundreds more) — swapping the extraction/research/benchmark model is an env var, not a
+code change. See "Model choice" below for how the three defaults were picked.
+
+**Why PDFs go through OpenRouter's file-parser plugin instead of a client-side PDF library.**
+The actual documents this system was built against — bilingual Chinese/Indonesian coal contracts
+with tables, stamps, and handwritten signatures — are exactly the kind of document a naive
+text-extraction library mangles. The plugin OCRs server-side (via `mistral-ocr` by default) and
+hands the model real text regardless of whether that model has any native file/vision support —
+which none of this app's open-weight defaults do.
+
+## Model choice
+
+`src/lib/openrouter.ts` picks a different default model per agent rather than one model for
+everything, based on live pricing/capability data pulled from `openrouter.ai/api/v1/models` at
+the time this was built (that catalog changes constantly — re-check before assuming these are
+still the best value, and don't trust a memorized "best model" list, including this one, without
+re-verifying):
+
+| Agent | Default | Why |
+|---|---|---|
+| Extraction | `deepseek/deepseek-v4-flash` | Highest-stakes task (filling a complex nested schema from real, sometimes OCR'd, bilingual contracts) — large context window (1M tokens) and strong general reasoning, still cheap (~$0.09/$0.18 per million tokens in/out at time of writing) |
+| Research | `qwen/qwen3-235b-a22b-2507` | Needs to synthesize several search results into one structured, honest (null-when-unknown) provider record — strong reasoning at a similar price point |
+| Benchmark | `openai/gpt-oss-120b` | Low-volume (one call per on-demand "benchmark this deal" click), so this leans toward writing quality (the rate-rationale text a lender actually reads) over squeezing out the last fraction of a cent |
+
+All three are independently overridable via `OPENROUTER_EXTRACTION_MODEL` /
+`OPENROUTER_RESEARCH_MODEL` / `OPENROUTER_BENCHMARK_MODEL`. Whatever you pick needs to support
+OpenRouter's `tools` and `structured_outputs` capabilities (filter for both on
+[openrouter.ai/models](https://openrouter.ai/models) — every model's page lists its supported
+parameters).
 
 **Why the Provider table is separate from any one org/deal.** A capital provider's terms aren't
 confidential — the same researched entry (a bank's product page, a marketplace's ticket-size
@@ -79,8 +104,8 @@ floor) is useful across every deal that might match it, exactly like the manual 
 ## The DSL
 
 `src/dsl/schema.ts` is the extraction agent's output contract — a Zod schema, not a bespoke
-textual language, because that gets you a JSON Schema for Claude's tool-use (see
-`src/lib/zod-tool.ts`), a TypeScript type, and a runtime validator from one definition. The
+textual language, because that gets you an OpenRouter-compatible strict JSON Schema (see
+`src/lib/json-schema.ts`), a TypeScript type, and a runtime validator from one definition. The
 `FinancingStructureType` enum
 (`POST_SHIPMENT_RECEIVABLES_DISCOUNTING` / `PRE_SHIPMENT_PROCUREMENT_FINANCE` /
 `PRE_EXPORT_BORROWING_BASE` / `ENTERPRISE_SCF_REVERSE_FACTORING`) and the chain-of-title fields on
@@ -97,7 +122,7 @@ published; say `null`/"not disclosed" instead.
 
 ```bash
 npm install
-cp .env.example .env.local   # fill in DATABASE_URL and ANTHROPIC_API_KEY at minimum
+cp .env.example .env.local   # fill in DATABASE_URL and OPENROUTER_API_KEY at minimum
 npx prisma migrate dev       # creates the schema in your Postgres
 npm run seed:providers       # seeds real provider data from the manual system, if you have
                               # Capital_Sourcing_System/providers_db/providers.json available
@@ -126,7 +151,8 @@ confirming the app compiles before you've stood up infrastructure.
 4. **Inngest**: install the Inngest integration from the Vercel Marketplace, or create an app at
    inngest.com and set `INNGEST_EVENT_KEY`/`INNGEST_SIGNING_KEY` manually. Either way it needs to
    know your deployed `/api/inngest` URL — the Vercel integration handles this for you.
-5. Set `ANTHROPIC_API_KEY` (Project → Settings → Environment Variables).
+5. Set `OPENROUTER_API_KEY` — one key for every model this app calls (Project → Settings →
+   Environment Variables). Get it from [openrouter.ai/keys](https://openrouter.ai/keys).
 6. Run `npx prisma migrate deploy` against the production `DATABASE_URL` once (locally, with
    `vercel env pull` first, or from a one-off Vercel deployment step) — migrations don't run
    automatically on deploy.

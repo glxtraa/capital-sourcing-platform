@@ -1,76 +1,87 @@
 import { readFileSync } from "fs";
 import { join } from "path";
-import type Anthropic from "@anthropic-ai/sdk";
-import { getAnthropicClient, AGENT_MODEL, WEB_SEARCH_TOOL } from "@/lib/anthropic";
-import { zodToToolSchema } from "@/lib/zod-tool";
+import type { ChatCompletionCreateParamsNonStreaming } from "openai/resources/chat/completions";
+import { getOpenRouterClient, RESEARCH_MODEL, webSearchPlugin } from "@/lib/openrouter";
+import { zodToResponseFormat } from "@/lib/json-schema";
 import { ProviderSchema, type ProviderDTO } from "@/dsl/provider-schema";
 
 const SYSTEM_PROMPT = readFileSync(join(process.cwd(), "src/agents/prompts/research.md"), "utf-8");
-
-const RECORD_PROVIDER_TOOL: Anthropic.Tool = {
-  name: "record_provider",
-  description: "Record the researched/updated provider record.",
-  input_schema: zodToToolSchema(ProviderSchema),
-};
+const RESPONSE_FORMAT = zodToResponseFormat(ProviderSchema, "Provider");
 
 /**
- * Mode B of the productionized `capital-provider-research` skill: research
- * and return a brand-new provider record. The caller (an Inngest function —
- * see src/inngest/functions/research-providers.ts) is responsible for
- * upserting the result into the database; this function only researches.
+ * Mode B of the productionized `capital-provider-research` skill, in two
+ * steps rather than a manually-managed multi-turn tool-call loop:
  *
- * Runs an agentic loop (the model can call web_search repeatedly) rather
- * than a single completion, because real research — the kind that produced
- * this system's actual database entries — takes multiple searches per
- * provider (product pages, application flows, press coverage for fee
- * data). max_turns bounds runaway loops.
+ *   1. A web-search-augmented call (OpenRouter's `web` plugin — works with
+ *      any model, unlike Claude's own hosted search tool, by routing
+ *      through Exa) that researches freely and writes up findings in
+ *      plain text, with citations attached as message annotations.
+ *   2. A second, plain call that structures those findings into the
+ *      Provider schema via strict JSON-schema mode.
+ *
+ * Splitting research from structuring (rather than forcing both in one
+ * call) is deliberate: not every OpenRouter model/engine combination
+ * reliably honors `response_format` and the `web` plugin simultaneously,
+ * and separating them means the citations OpenRouter returns as
+ * annotations can be fed back in explicitly for the structuring step to
+ * cite properly in `sources`.
  */
 export async function researchNewProvider(
   providerNameOrHint: string,
   dealContext: string,
-  maxTurns = 8,
 ): Promise<ProviderDTO> {
-  const client = getAnthropicClient();
+  const client = getOpenRouterClient();
 
-  const messages: Anthropic.MessageParam[] = [
-    {
-      role: "user",
-      content:
-        `Research this capital provider and record a full entry: "${providerNameOrHint}".\n\n` +
-        `Context on why it's being added — the deal that surfaced the need for it:\n${dealContext}`,
-    },
-  ];
-
-  for (let turn = 0; turn < maxTurns; turn++) {
-    const response = await client.messages.create({
-      model: AGENT_MODEL,
-      max_tokens: 8192,
-      system: SYSTEM_PROMPT,
-      tools: [WEB_SEARCH_TOOL, RECORD_PROVIDER_TOOL],
-      messages,
-    });
-
-    const providerToolUse = response.content.find(
-      (b) => b.type === "tool_use" && b.name === "record_provider",
-    );
-    if (providerToolUse && providerToolUse.type === "tool_use") {
-      return ProviderSchema.parse(providerToolUse.input);
-    }
-
-    // Model wants to keep researching (web_search calls) or hasn't finished
-    // — feed its turn back in and let the SDK/API handle web_search
-    // execution server-side (Anthropic's hosted web search tool does not
-    // require the caller to execute the search itself).
-    messages.push({ role: "assistant", content: response.content });
-    if (response.stop_reason === "end_turn") {
-      messages.push({
+  const researchParams: ChatCompletionCreateParamsNonStreaming & { plugins?: readonly unknown[] } = {
+    model: RESEARCH_MODEL,
+    plugins: webSearchPlugin(8),
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      {
         role: "user",
-        content: "Please call record_provider now with everything you've found so far.",
-      });
-    }
+        content:
+          `Research this capital provider and write up everything you find: "${providerNameOrHint}".\n\n` +
+          `Context on why it's being added — the deal that surfaced the need for it:\n${dealContext}\n\n` +
+          `Cover: what it is, seller/obligor jurisdictions it accepts, financing structures it ` +
+          `supports, ticket size bounds, the gating factor, fee structure, document requirements, ` +
+          `application process, and a direct application URL. Note explicitly when something isn't ` +
+          `publicly disclosed rather than guessing.`,
+      },
+    ],
+  };
+
+  const researchResponse = await client.chat.completions.create(researchParams);
+  const findings = researchResponse.choices[0]?.message?.content;
+  if (!findings) {
+    throw new Error(`Research agent found nothing for "${providerNameOrHint}". Raw response: ${JSON.stringify(researchResponse)}`);
   }
 
-  throw new Error(
-    `Research agent did not produce a provider record for "${providerNameOrHint}" within ${maxTurns} turns.`,
-  );
+  type Annotation = { type: string; url_citation?: { url: string; title?: string } };
+  const annotations = (researchResponse.choices[0]?.message as { annotations?: Annotation[] } | undefined)?.annotations ?? [];
+  const citedUrls = annotations
+    .filter((a) => a.type === "url_citation" && a.url_citation)
+    .map((a) => a.url_citation!.url);
+
+  const structureResponse = await client.chat.completions.create({
+    model: RESEARCH_MODEL,
+    response_format: RESPONSE_FORMAT,
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      {
+        role: "user",
+        content:
+          `Here is your research on "${providerNameOrHint}":\n\n${findings}\n\n` +
+          (citedUrls.length > 0 ? `URLs you cited while researching:\n${citedUrls.join("\n")}\n\n` : "") +
+          `Now record this as a complete Provider entry per the schema. Every field must be filled — ` +
+          `use null or "UNVERIFIED_NEEDS_CHECK" for anything you don't have real, sourced data for. ` +
+          `Never fabricate a fee, minimum, or document requirement.`,
+      },
+    ],
+  });
+
+  const content = structureResponse.choices[0]?.message?.content;
+  if (!content) {
+    throw new Error(`Research agent failed to structure findings for "${providerNameOrHint}".`);
+  }
+  return ProviderSchema.parse(JSON.parse(content));
 }
