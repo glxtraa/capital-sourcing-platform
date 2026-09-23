@@ -1,4 +1,10 @@
 import { PrismaClient } from "@prisma/client";
+import { resolveDatabaseUrl } from "@/lib/env";
+
+// Must run before `new PrismaClient()` — see src/lib/env.ts for why: a
+// Vercel Marketplace integration (Neon, etc.) may have named the
+// connection string something other than plain DATABASE_URL.
+resolveDatabaseUrl();
 
 // Standard Next.js/Vercel serverless singleton pattern — avoids exhausting
 // Postgres connections across hot-reloads in dev / concurrent lambda

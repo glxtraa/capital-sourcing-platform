@@ -18,7 +18,9 @@
 import { readFileSync } from "fs";
 import { resolve } from "path";
 import { PrismaClient } from "@prisma/client";
+import { resolveDatabaseUrl } from "../src/lib/env";
 
+resolveDatabaseUrl();
 const db = new PrismaClient();
 
 const SNAKE_TO_CAMEL_TYPE: Record<string, string> = {

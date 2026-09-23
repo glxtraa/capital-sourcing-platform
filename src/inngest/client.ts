@@ -1,4 +1,5 @@
 import { EventSchemas, Inngest } from "inngest";
+import { resolveInngestEventKey } from "@/lib/env";
 
 /**
  * Why Inngest (or an equivalent durable-workflow runner like Trigger.dev)
@@ -28,6 +29,11 @@ type Events = {
 export const inngest = new Inngest({
   id: "capital-sourcing-platform",
   schemas: new EventSchemas().fromRecord<Events>(),
+  // Explicit rather than relying on the SDK's own INNGEST_EVENT_KEY
+  // auto-read: a Vercel Marketplace integration may have named it
+  // something else (e.g. INNGEST_WORKFLOW_INNGEST_EVENT_KEY) — see
+  // src/lib/env.ts.
+  eventKey: resolveInngestEventKey(),
 });
 
 /** Cap on how many research->rematch cycles one deal can trigger

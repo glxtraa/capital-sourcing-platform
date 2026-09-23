@@ -161,6 +161,41 @@ confirming the app compiles before you've stood up infrastructure.
 8. Deploy. Auth is still the `demo-org` stub at this point — do this step before step 1 if this
    will ever hold real confidential documents, not after.
 
+### Environment variable troubleshooting: integration-prefixed names
+
+Steps 2 and 4 above assume the integration writes the plain name (`DATABASE_URL`,
+`INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY`) — but connecting via the **Vercel Marketplace**
+(rather than Vercel's own first-party "Postgres"/"Blob" storage products) often prefixes
+variables with the resource's own name instead, since Vercel can't rename a
+variable an integration manages. A real example from deploying this app:
+
+```
+NEON_DATABASE_DATABASE_URL              <- the real connection string
+DATABASE_URL                            <- a separately, manually-created var (stale/empty)
+
+INNGEST_WORKFLOW_INNGEST_EVENT_KEY      <- the real event key
+INNGEST_WORKFLOW_INNGEST_SIGNING_KEY    <- the real signing key
+INNGEST_EVENT_KEY / INNGEST_SIGNING_KEY <- separately, manually-created vars (stale/empty)
+```
+
+Two fixes, do both:
+
+1. **In the Vercel dashboard**: open the prefixed variable, copy its value, and paste it into
+   the plain-named one (edit the existing var rather than trying to rename the integration's
+   copy). This is the only thing that fixes `npx prisma migrate deploy`/`prisma studio`, since
+   the Prisma CLI reads `DATABASE_URL` straight from the OS environment before any of this
+   app's own code runs.
+2. **Already handled in code** (`src/lib/env.ts`): the deployed app itself resolves
+   `DATABASE_URL` and the two Inngest keys from a list of known integration-prefixed fallback
+   names if the plain one is empty, so the live app keeps working even if step 1 is missed or a
+   resource gets renamed/reconnected later. If your integration produced a name not in that
+   fallback list, add it there rather than only patching the dashboard.
+
+Also worth a once-over: delete any leftover `ANTHROPIC_API_KEY`/`ANTHROPIC_MODEL` vars from
+before this app moved to OpenRouter — they're unused now — and confirm `BLOB_READ_WRITE_TOKEN`
+actually holds a token (starts with `vercel_blob_rw_`), since Vercel's own Blob product should
+set that exact name directly without prefixing.
+
 ## Why this is its own folder/repo
 
 This platform code has no confidential company data in it — the manual system's actual deal
