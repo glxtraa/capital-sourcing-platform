@@ -2,15 +2,23 @@
 
 import { useState, useCallback, type DragEvent } from "react";
 import { useRouter } from "next/navigation";
+import { upload } from "@vercel/blob/client";
 import { Button } from "@/components/ui/primitives";
 
 /**
- * Two-step flow, both against real API routes:
+ * Four-step flow:
  *   1. POST /api/deals { name } -> { id }
- *   2. POST /api/deals/:id/upload (multipart) -> fires the extraction
- *      pipeline server-side; this component just navigates to the deal
- *      page afterward, where status polling (see DealStatusPoller) takes
- *      over.
+ *   2. For each file: upload() straight to Vercel Blob from the browser
+ *      (via a token minted by /api/deals/:id/upload) -- the file bytes
+ *      never pass through our own server, which matters because Vercel
+ *      serverless functions cap request bodies at 4.5MB and real contracts
+ *      routinely exceed that (this app's own worked examples include a
+ *      4.4MB scanned coal contract).
+ *   3. POST /api/deals/:id/documents with each resulting blob URL (tiny
+ *      JSON, not the file itself) to record it.
+ *   4. POST /api/deals/:id/extract once every file is registered, to kick
+ *      off the pipeline. This component then navigates to the deal page,
+ *      where status polling (see DealStatusPoller) takes over.
  */
 export function UploadDropzone() {
   const router = useRouter();
@@ -18,6 +26,7 @@ export function UploadDropzone() {
   const [files, setFiles] = useState<File[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [progress, setProgress] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const onDrop = useCallback((e: DragEvent<HTMLDivElement>) => {
@@ -46,18 +55,37 @@ export function UploadDropzone() {
       if (!dealRes.ok) throw new Error("Failed to create deal.");
       const deal = await dealRes.json();
 
-      const formData = new FormData();
-      for (const file of files) formData.append("files", file);
-      const uploadRes = await fetch(`/api/deals/${deal.id}/upload`, {
-        method: "POST",
-        body: formData,
-      });
-      if (!uploadRes.ok) throw new Error("Failed to upload documents.");
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        setProgress(`Uploading ${file.name} (${i + 1}/${files.length})…`);
+
+        const blob = await upload(file.name, file, {
+          access: "public",
+          handleUploadUrl: `/api/deals/${deal.id}/upload`,
+        });
+
+        const registerRes = await fetch(`/api/deals/${deal.id}/documents`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            fileName: file.name,
+            blobUrl: blob.url,
+            mimeType: file.type || "application/octet-stream",
+            sizeBytes: file.size,
+          }),
+        });
+        if (!registerRes.ok) throw new Error(`Uploaded ${file.name} but failed to register it.`);
+      }
+
+      setProgress("Starting extraction…");
+      const extractRes = await fetch(`/api/deals/${deal.id}/extract`, { method: "POST" });
+      if (!extractRes.ok) throw new Error("Documents uploaded, but failed to start extraction.");
 
       router.push(`/deals/${deal.id}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong.");
       setIsSubmitting(false);
+      setProgress(null);
     }
   }
 
@@ -119,7 +147,7 @@ export function UploadDropzone() {
       {error && <p className="text-sm text-red-600">{error}</p>}
 
       <Button onClick={handleSubmit} disabled={isSubmitting}>
-        {isSubmitting ? "Uploading…" : "Create deal & start extraction"}
+        {isSubmitting ? (progress ?? "Uploading…") : "Create deal & start extraction"}
       </Button>
     </div>
   );
