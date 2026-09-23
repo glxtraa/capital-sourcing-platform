@@ -196,6 +196,22 @@ before this app moved to OpenRouter — they're unused now — and confirm `BLOB
 actually holds a token (starts with `vercel_blob_rw_`), since Vercel's own Blob product should
 set that exact name directly without prefixing.
 
+## Keeping strangers from burning your API budget
+
+This app is meant to be deployed publicly on Vercel, and nearly every page/API route can
+trigger a paid OpenRouter call, a Blob write, or an Inngest run — there's no user accounts or
+billing limits standing between a random visitor and your usage. Set `SITE_PASSWORD` (Vercel →
+Settings → Environment Variables) and every route except Inngest's own callback
+(`/api/inngest`) requires that password once, stored as a cookie for 30 days
+(`src/middleware.ts` + `src/lib/site-auth.ts`). Leave it unset and the app is fully public,
+exactly as before — nothing breaks either way, since the gate is a no-op without it.
+
+This is intentionally NOT a real auth system — one shared password, not per-user accounts, no
+password reset flow, nothing tied to `orgId` (that's still the `demo-org` stub in
+`src/lib/auth.ts`, a separate and unrelated gap). It's sized to the actual problem: stop a
+stranger who stumbles on the URL from running up your bill, not protect genuinely confidential
+documents from a determined attacker.
+
 ## Why this is its own folder/repo
 
 This platform code has no confidential company data in it — the manual system's actual deal
