@@ -47,7 +47,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ dealId
         const extraction = await extractFromDocument(buffer, doc.mimeType, doc.fileName);
         await db.uploadedDocument.update({
           where: { id: doc.id },
-          data: { extractedFieldsRaw: extraction },
+          data: { extractedFieldsRaw: extraction, documentTypes: extraction.documentTypes },
         });
         return {
           ...extraction,

@@ -32,9 +32,26 @@ interface MatchableProvider {
  * surface `reasons` so a human (or the research agent) can tell which.
  */
 
+export type CriterionStatus = "pass" | "fail" | "warning";
+
+/**
+ * One row of the "why did/didn't this provider match" breakdown shown in the
+ * UI as a table. `pass`/`fail` are the four hard eligibility checks that feed
+ * `eligibleOnPaper`; `warning` rows (gating factor, data freshness) are
+ * informational — they don't affect eligibility but are worth a human's
+ * attention before actually pursuing this provider.
+ */
+export interface MatchCriterion {
+  key: string;
+  label: string;
+  status: CriterionStatus;
+  detail: string;
+}
+
 export interface MatchResult {
   providerId: string;
   eligibleOnPaper: boolean;
+  criteria: MatchCriterion[];
   reasons: string[];
 }
 
@@ -75,18 +92,41 @@ export function matchProvider(
   ask: Pick<FinancingAsk, "amount" | "structureType">,
 ): MatchResult {
   const reasons: string[] = [];
+  const criteria: MatchCriterion[] = [];
 
   const sellerOk = jurisdictionOk(provider.sellerJurisdictions, deal.borrowerJurisdiction);
   if (!sellerOk) reasons.push(`seller jurisdiction "${deal.borrowerJurisdiction}" not in provider's accepted list`);
+  criteria.push({
+    key: "sellerJurisdiction",
+    label: "Seller/borrower jurisdiction",
+    status: sellerOk ? "pass" : "fail",
+    detail: sellerOk
+      ? deal.borrowerJurisdiction
+        ? `"${deal.borrowerJurisdiction}" is in the provider's accepted list`
+        : "no borrower jurisdiction on file yet — not checked"
+      : `"${deal.borrowerJurisdiction}" not in provider's accepted list`,
+  });
 
   const obligorOk = jurisdictionOk(provider.obligorJurisdictions, deal.obligorJurisdiction);
   if (!obligorOk) reasons.push(`obligor jurisdiction "${deal.obligorJurisdiction}" not in provider's accepted list`);
+  criteria.push({
+    key: "obligorJurisdiction",
+    label: "Obligor jurisdiction",
+    status: obligorOk ? "pass" : "fail",
+    detail: obligorOk
+      ? deal.obligorJurisdiction
+        ? `"${deal.obligorJurisdiction}" is in the provider's accepted list`
+        : "no obligor jurisdiction on file yet — not checked"
+      : `"${deal.obligorJurisdiction}" not in provider's accepted list`,
+  });
 
   const { ok: ticketIsOk, reason: ticketReason } = ticketOk(provider, ask.amount);
   reasons.push(ticketReason);
+  criteria.push({ key: "ticketSize", label: "Ticket size", status: ticketIsOk ? "pass" : "fail", detail: ticketReason });
 
+  const structureUnreviewed = provider.financingStructuresSupported.length === 0;
   const structureOk =
-    provider.financingStructuresSupported.length === 0 || // not yet reviewed for this field — don't fail on it
+    structureUnreviewed || // not yet reviewed for this field — don't fail on it
     provider.financingStructuresSupported.includes(ask.structureType as never);
   if (!structureOk) {
     reasons.push(
@@ -95,16 +135,43 @@ export function matchProvider(
         `this field is known-incomplete for older entries`,
     );
   }
+  criteria.push({
+    key: "financingStructure",
+    label: "Financing structure",
+    status: structureUnreviewed ? "warning" : structureOk ? "pass" : "fail",
+    detail: structureUnreviewed
+      ? "provider's financing_structures_supported not yet reviewed for this field — don't assume support or exclusion either way"
+      : structureOk
+        ? `supports ${String(ask.structureType).replaceAll("_", " ")}`
+        : `known financing_structures_supported does not include ${String(ask.structureType).replaceAll("_", " ")} — re-check the provider's actual product description before ruling this out entirely`,
+  });
 
   const eligibleOnPaper = sellerOk && obligorOk && ticketIsOk && structureOk;
 
-  if (provider.gatingFactor) reasons.push(`gating factor on file: ${provider.gatingFactor}`);
+  if (provider.gatingFactor) {
+    reasons.push(`gating factor on file: ${provider.gatingFactor}`);
+    criteria.push({
+      key: "gatingFactor",
+      label: "Gating factor on file",
+      status: "warning",
+      detail: provider.gatingFactor,
+    });
+  }
   const lastVerifiedMs = provider.lastVerified ? new Date(provider.lastVerified).getTime() : null;
-  if (!lastVerifiedMs || Date.now() - lastVerifiedMs > 90 * 24 * 3600 * 1000) {
+  const isStale = !lastVerifiedMs || Date.now() - lastVerifiedMs > 90 * 24 * 3600 * 1000;
+  if (isStale) {
     reasons.push("STALE: last_verified is missing or >90 days old — consider a research-refresh run before relying on this");
   }
+  criteria.push({
+    key: "dataFreshness",
+    label: "Data freshness",
+    status: isStale ? "warning" : "pass",
+    detail: isStale
+      ? "last_verified is missing or >90 days old — consider a research-refresh run before relying on this"
+      : `verified ${new Date(lastVerifiedMs!).toLocaleDateString()}`,
+  });
 
-  return { providerId: provider.id, eligibleOnPaper, reasons };
+  return { providerId: provider.id, eligibleOnPaper, criteria, reasons };
 }
 
 export function matchAllProviders(

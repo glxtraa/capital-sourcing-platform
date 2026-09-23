@@ -1,9 +1,13 @@
 import { notFound } from "next/navigation";
+import type { ReactNode } from "react";
+import { Check, X, TriangleAlert } from "lucide-react";
 import { db } from "@/lib/db";
 import { Card, CardContent, CardHeader, CardTitle, Badge, EmptyState } from "@/components/ui/primitives";
 import { DealStatusBadge } from "@/components/DealStatusBadge";
 import { DealStatusPoller } from "@/components/DealStatusPoller";
 import { DealActions } from "@/components/DealActions";
+import { matchProvider, type CriterionStatus } from "@/lib/matching";
+import { computeDocumentCoverage } from "@/lib/document-coverage";
 
 export const dynamic = "force-dynamic";
 
@@ -11,6 +15,12 @@ const RISK_SEVERITY_TONE = (severity: number): "red" | "amber" | "neutral" =>
   severity >= 4 ? "red" : severity >= 3 ? "amber" : "neutral";
 
 const VERDICT_TONE = { GOOD: "green", POSSIBLE: "blue", POOR: "amber", EXCLUDED: "neutral" } as const;
+
+const CRITERION_ICON: Record<CriterionStatus, ReactNode> = {
+  pass: <Check className="h-4 w-4 text-emerald-600 dark:text-emerald-400" aria-label="pass" />,
+  fail: <X className="h-4 w-4 text-red-600 dark:text-red-400" aria-label="fail" />,
+  warning: <TriangleAlert className="h-4 w-4 text-amber-600 dark:text-amber-400" aria-label="warning" />,
+};
 
 export default async function DealDetailPage({ params }: { params: Promise<{ dealId: string }> }) {
   const { dealId } = await params;
@@ -21,7 +31,7 @@ export default async function DealDetailPage({ params }: { params: Promise<{ dea
       parties: true,
       financingAsks: true,
       riskFlags: { orderBy: { severity: "desc" } },
-      providerMatches: { include: { provider: true } },
+      providerMatches: { include: { provider: { include: { documentsRequired: true } } } },
       termSheets: { orderBy: { createdAt: "desc" }, take: 1 },
       researchRuns: { orderBy: { startedAt: "desc" } },
     },
@@ -34,6 +44,22 @@ export default async function DealDetailPage({ params }: { params: Promise<{ dea
     POSSIBLE: deal.providerMatches.filter((m) => m.verdict === "POSSIBLE"),
     POOR: deal.providerMatches.filter((m) => m.verdict === "POOR"),
     EXCLUDED: deal.providerMatches.filter((m) => m.verdict === "EXCLUDED"),
+  };
+
+  // Same inputs match/route.ts used when it last persisted these rows —
+  // recomputed live here so the criteria table always reflects the deal's
+  // and provider's CURRENT data, not a stale snapshot from whenever "Run
+  // matching" last ran.
+  const borrower = deal.parties.find((p) => p.role === "BORROWER");
+  const obligor = deal.parties.find((p) => p.role === "OBLIGOR");
+  const primaryAsk = deal.financingAsks[0];
+  const dealMatchInput = {
+    borrowerJurisdiction: borrower?.jurisdiction ?? null,
+    obligorJurisdiction: obligor?.jurisdiction ?? null,
+  };
+  const askMatchInput = {
+    amount: primaryAsk?.amount ?? null,
+    structureType: primaryAsk?.structureType ?? "UNKNOWN",
   };
 
   return (
@@ -213,25 +239,96 @@ export default async function DealDetailPage({ params }: { params: Promise<{ dea
                       {verdict} ({matchesByVerdict[verdict].length})
                     </h4>
                     <ul className="space-y-2">
-                      {matchesByVerdict[verdict].map((m) => (
-                        <li key={m.id} className="rounded-lg border border-neutral-100 p-3 text-sm dark:border-neutral-800">
-                          <div className="flex items-center justify-between">
-                            <span className="font-medium">{m.provider.name}</span>
-                            <Badge tone={VERDICT_TONE[m.verdict]}>{m.verdict}</Badge>
-                          </div>
-                          <p className="mt-1 text-neutral-500">{m.rationale}</p>
-                          {m.provider.applicationUrl && (
-                            <a
-                              href={m.provider.applicationUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="mt-1 inline-block text-xs text-blue-600 hover:underline"
-                            >
-                              {m.provider.applicationUrl}
-                            </a>
-                          )}
-                        </li>
-                      ))}
+                      {matchesByVerdict[verdict].map((m) => {
+                        const criteria = matchProvider(m.provider, dealMatchInput, askMatchInput).criteria;
+                        const docCoverage = computeDocumentCoverage(m.provider.documentsRequired, deal.documents);
+                        const missingDocCount = docCoverage.filter((d) => !d.satisfied).length;
+                        return (
+                          <li key={m.id} className="rounded-lg border border-neutral-100 p-3 text-sm dark:border-neutral-800">
+                            <div className="flex items-center justify-between">
+                              <span className="font-medium">{m.provider.name}</span>
+                              <Badge tone={VERDICT_TONE[m.verdict]}>{m.verdict}</Badge>
+                            </div>
+                            <p className="mt-1 text-neutral-500">{m.rationale}</p>
+                            {m.provider.applicationUrl && (
+                              <a
+                                href={m.provider.applicationUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="mt-1 inline-block text-xs text-blue-600 hover:underline"
+                              >
+                                {m.provider.applicationUrl}
+                              </a>
+                            )}
+
+                            <details className="mt-2 group">
+                              <summary className="cursor-pointer text-xs font-medium text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100">
+                                Match criteria &amp; documents
+                                {missingDocCount > 0 && (
+                                  <span className="ml-1 text-amber-600 dark:text-amber-400">
+                                    ({missingDocCount} document{missingDocCount === 1 ? "" : "s"} still needed)
+                                  </span>
+                                )}
+                              </summary>
+
+                              <div className="mt-2 overflow-x-auto">
+                                <table className="w-full text-left text-xs">
+                                  <thead className="text-neutral-500">
+                                    <tr>
+                                      <th className="w-6 pb-1 pr-2 font-medium"></th>
+                                      <th className="pb-1 pr-4 font-medium">Criterion</th>
+                                      <th className="pb-1 font-medium">Detail</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {criteria.map((c) => (
+                                      <tr key={c.key} className="border-t border-neutral-100 align-top dark:border-neutral-800">
+                                        <td className="py-1.5 pr-2">{CRITERION_ICON[c.status]}</td>
+                                        <td className="py-1.5 pr-4 whitespace-nowrap">{c.label}</td>
+                                        <td className="py-1.5 text-neutral-600 dark:text-neutral-400">{c.detail}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+
+                              {docCoverage.length > 0 && (
+                                <div className="mt-3 overflow-x-auto">
+                                  <p className="mb-1 text-xs font-medium text-neutral-600 dark:text-neutral-400">
+                                    Documents required
+                                  </p>
+                                  <table className="w-full text-left text-xs">
+                                    <thead className="text-neutral-500">
+                                      <tr>
+                                        <th className="w-6 pb-1 pr-2 font-medium"></th>
+                                        <th className="pb-1 pr-4 font-medium">Code</th>
+                                        <th className="pb-1 pr-4 font-medium">Note</th>
+                                        <th className="pb-1 font-medium">Status</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {docCoverage.map((d) => (
+                                        <tr key={d.code} className="border-t border-neutral-100 align-top dark:border-neutral-800">
+                                          <td className="py-1.5 pr-2">
+                                            {d.satisfied ? CRITERION_ICON.pass : CRITERION_ICON.fail}
+                                          </td>
+                                          <td className="py-1.5 pr-4 whitespace-nowrap font-mono text-[11px]">{d.code}</td>
+                                          <td className="py-1.5 pr-4 text-neutral-600 dark:text-neutral-400">{d.note ?? "—"}</td>
+                                          <td className="py-1.5 text-neutral-600 dark:text-neutral-400">
+                                            {d.satisfied
+                                              ? `Present: ${d.matchingFileNames.join(", ")}`
+                                              : "Still needs to be added"}
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              )}
+                            </details>
+                          </li>
+                        );
+                      })}
                     </ul>
                   </div>
                 ),

@@ -115,6 +115,15 @@ export const DocumentExtractionSchema = z.object({
   parties: z.array(PartySchema),
   financingAsks: z.array(FinancingAskSchema),
   riskFlags: z.array(RiskFlagSchema),
+  /**
+   * Which Standard Document Taxonomy code(s) (see STANDARD_DOCUMENT_TAXONOMY
+   * below) this document satisfies, e.g. a sale contract -> ["DEAL_CONTRACT"],
+   * a certificate of incorporation -> ["CORP_INCORP"]. Used to check which of
+   * a matched provider's required documents are already covered by what's
+   * been uploaded to this deal. Prefer an existing taxonomy code; only
+   * introduce a new SCREAMING_SNAKE_CASE code if genuinely none fit.
+   */
+  documentTypes: z.array(z.string()).default([]),
   /** Raw notes the agent wants a human or a later pass to see verbatim. */
   openQuestions: z.array(z.string()).default([]),
 });

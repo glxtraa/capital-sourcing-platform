@@ -148,6 +148,12 @@ model UploadedDocument {
   // into the deal-level Party/FinancingAsk/RiskFlag rows — kept for
   // provenance/audit ("which document said what").
   extractedFieldsRaw Json?
+  // Standard Document Taxonomy code(s) this file satisfies (e.g. CORP_INCORP,
+  // DEAL_CONTRACT), classified by the extraction agent -- used to check which
+  // of a matched provider's documentsRequired are already covered by what's
+  // been uploaded. Empty until extraction runs (or re-runs) after this field
+  // was added.
+  documentTypes String[] @default([])
   uploadedAt  DateTime @default(now())
 }
 

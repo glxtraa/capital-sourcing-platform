@@ -6,7 +6,7 @@ import type {
 } from "openai/resources/chat/completions";
 import { getOpenRouterClient, EXTRACTION_MODEL, pdfParserPlugin } from "@/lib/openrouter";
 import { zodToResponseFormat } from "@/lib/json-schema";
-import { DocumentExtractionSchema, type DocumentExtraction } from "@/dsl/schema";
+import { DocumentExtractionSchema, STANDARD_DOCUMENT_TAXONOMY, type DocumentExtraction } from "@/dsl/schema";
 
 const SYSTEM_PROMPT = readFileSync(
   join(process.cwd(), "src/agents/prompts/extraction.md"),
@@ -14,6 +14,14 @@ const SYSTEM_PROMPT = readFileSync(
 );
 
 const RESPONSE_FORMAT = zodToResponseFormat(DocumentExtractionSchema, "DocumentExtraction");
+
+// Injected into the user message (rather than hardcoded in the prompt file)
+// so it can never drift out of sync with the taxonomy providers' own
+// documentsRequired entries are drawn from.
+const TAXONOMY_HINT =
+  `Standard Document Taxonomy codes to classify this document against for documentTypes ` +
+  `(use one or more that apply; only introduce a new code if genuinely none fit): ` +
+  `${STANDARD_DOCUMENT_TAXONOMY.join(", ")}.`;
 
 /**
  * Runs one extraction pass over a single uploaded document.
@@ -45,7 +53,10 @@ export async function extractFromDocument(
       ? {
           role: "user",
           content: [
-            { type: "text", text: `Document filename: ${fileName}\n\nExtract this document per the system prompt.` },
+            {
+              type: "text",
+              text: `Document filename: ${fileName}\n\nExtract this document per the system prompt.\n\n${TAXONOMY_HINT}`,
+            },
             {
               type: "file",
               file: {
@@ -57,7 +68,7 @@ export async function extractFromDocument(
         }
       : {
           role: "user",
-          content: `Document filename: ${fileName}\n\nExtract this document per the system prompt.\n\n${fileBuffer.toString("utf-8")}`,
+          content: `Document filename: ${fileName}\n\nExtract this document per the system prompt.\n\n${TAXONOMY_HINT}\n\n${fileBuffer.toString("utf-8")}`,
         }
   ) as ChatCompletionMessageParam;
 

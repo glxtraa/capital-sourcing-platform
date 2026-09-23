@@ -29,6 +29,13 @@ an informal note — read it for what it actually is, not what you expect it to 
   fraud pattern (forged/double-pledged bills of lading or invoices, an intermediary layer with no
   verifiable link to a primary right-holder), and (e) a financing teaser or deadline that has
   already passed relative to today's date.
+- **Document type(s)**: classify this document against the Standard Document Taxonomy codes
+  given to you in the user message (e.g. a sale/purchase contract is `DEAL_CONTRACT`, a
+  certificate of incorporation is `CORP_INCORP`). A single document can satisfy more than one
+  code (a stamped contract with an attached bill of lading is both). This is what lets the app
+  tell a capital provider's required-document checklist apart from what's actually been
+  uploaded — get it right rather than leaving it empty. Only invent a new code if the document is
+  genuinely a type nothing in the given list covers.
 
 ## Hard rules
 
