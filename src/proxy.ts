@@ -8,7 +8,7 @@ import { SITE_AUTH_COOKIE, expectedCookieValue } from "@/lib/site-auth";
  * route (other than the login flow and Inngest's own callback) requires a
  * cookie matching sha256(SITE_PASSWORD).
  */
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const expected = await expectedCookieValue();
   if (!expected) return NextResponse.next(); // no password configured -> gate disabled
 
