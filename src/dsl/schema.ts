@@ -47,12 +47,12 @@ export type RiskFlagCategory = z.infer<typeof RiskFlagCategory>;
 export const PartySchema = z.object({
   role: PartyRole,
   legalName: z.string().min(1),
-  jurisdiction: z.string().nullable(),
-  isListed: z.boolean().nullable(),
-  publicRating: z.string().nullable(),
-  bankName: z.string().nullable(),
-  bankAccount: z.string().nullable(),
-  notes: z.string().nullable(),
+  jurisdiction: z.string().nullable().optional(),
+  isListed: z.boolean().nullable().optional(),
+  publicRating: z.string().nullable().optional(),
+  bankName: z.string().nullable().optional(),
+  bankAccount: z.string().nullable().optional(),
+  notes: z.string().nullable().optional(),
   /**
    * Chain-of-title fields — only meaningful when role === "INTERMEDIARY".
    * Populate whenever a party holds a transport/trading/sale permit on a
@@ -62,7 +62,7 @@ export const PartySchema = z.object({
    * separate mining-IUP holder — the extraction agent found this by reading
    * the permit numbers explicitly named in the contract, not by inference.
    */
-  primaryRightHolderName: z.string().nullable(),
+  primaryRightHolderName: z.string().nullable().optional(),
   primaryRightHolderVerified: z.boolean().default(false),
   /** Which source document(s) this party's data came from, for audit. */
   sourceDocuments: z.array(z.string()).default([]),
@@ -74,23 +74,25 @@ export const FinancingAskSchema = z.object({
   structureTypeConfidence: z
     .enum(["sourced_from_client_framing", "inferred_from_contract_terms", "low_confidence_guess"])
     .nullable()
+    .optional()
     .describe(
       "How the structure type was determined — e.g. the borrower explicitly said " +
         "'fund me between buying and selling' (sourced_from_client_framing), or it was " +
         "inferred from payment-term mismatches across two contracts (inferred_from_contract_terms).",
     ),
-  amount: z.number().nullable(),
-  currency: z.string().length(3).nullable().describe("ISO 4217, e.g. USD, IDR, JPY"),
-  advanceRatePct: z.number().min(0).max(100).nullable(),
-  tenorDaysMin: z.number().int().nullable(),
-  tenorDaysMax: z.number().int().nullable(),
+  amount: z.number().nullable().optional(),
+  currency: z.string().length(3).nullable().optional().describe("ISO 4217, e.g. USD, IDR, JPY"),
+  advanceRatePct: z.number().min(0).max(100).nullable().optional(),
+  tenorDaysMin: z.number().int().nullable().optional(),
+  tenorDaysMax: z.number().int().nullable().optional(),
   tenorNote: z
     .string()
     .nullable()
+    .optional()
     .describe("Say explicitly if a tenor figure is provisional pending a fact not yet known " +
       "(e.g. PT KEM's shipping transit time was never stated in any contract)."),
   recurring: z.boolean().default(false),
-  recurringNote: z.string().nullable(),
+  recurringNote: z.string().nullable().optional(),
 });
 export type FinancingAsk = z.infer<typeof FinancingAskSchema>;
 

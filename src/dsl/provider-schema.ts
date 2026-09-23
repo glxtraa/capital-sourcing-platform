@@ -22,7 +22,7 @@ export const ProviderConfidence = z.enum([
 
 export const ProviderDocumentRequirementSchema = z.object({
   code: z.string(),
-  note: z.string().nullable(),
+  note: z.string().nullable().optional(),
 });
 
 export const ProviderSchema = z.object({
@@ -33,27 +33,28 @@ export const ProviderSchema = z.object({
   name: z.string(),
   type: ProviderType,
   product: z.string(),
-  recourse: z.enum(["recourse", "non_recourse", "both", "not_applicable"]).nullable(),
+  recourse: z.enum(["recourse", "non_recourse", "both", "not_applicable"]).nullable().optional(),
   sellerJurisdictions: z.array(z.string()).describe('"any" is a literal member when unrestricted'),
   obligorJurisdictions: z.array(z.string()),
   currencies: z.array(z.string()),
-  minTicketUsd: z.number().nullable(),
-  maxTicketUsd: z.number().nullable(),
-  typicalMinAnnualVolumeUsd: z.number().nullable(),
+  minTicketUsd: z.number().nullable().optional(),
+  maxTicketUsd: z.number().nullable().optional(),
+  typicalMinAnnualVolumeUsd: z.number().nullable().optional(),
   gatingFactor: z
     .string()
     .nullable()
+    .optional()
     .describe("The #1 reason a deal gets excluded, if any — there is almost always one; find it."),
-  feeNotes: z.string().nullable(),
+  feeNotes: z.string().nullable().optional(),
   documentsRequired: z.array(ProviderDocumentRequirementSchema),
-  applicationProcess: z.string().nullable(),
-  applicationUrl: z.string().nullable(),
-  contact: z.string().nullable(),
-  timeToTermSheet: z.string().nullable(),
+  applicationProcess: z.string().nullable().optional(),
+  applicationUrl: z.string().nullable().optional(),
+  contact: z.string().nullable().optional(),
+  timeToTermSheet: z.string().nullable().optional(),
   confidence: ProviderConfidence,
-  lastVerified: z.string().nullable().describe("ISO date"),
+  lastVerified: z.string().nullable().optional().describe("ISO date"),
   sources: z.array(z.string()),
-  notes: z.string().nullable(),
+  notes: z.string().nullable().optional(),
   financingStructuresSupported: z.array(FinancingStructureType).default([]),
 });
 export type ProviderDTO = z.infer<typeof ProviderSchema>;

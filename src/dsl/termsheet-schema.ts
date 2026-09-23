@@ -16,13 +16,13 @@ export const TermSheetOutputSchema = z.object({
   leverageAssessment: z
     .string()
     .describe("Does the borrower have real, funded, available alternatives right now, or not — and what that implies for pricing power."),
-  proposedRatePct: z.number().nullable(),
+  proposedRatePct: z.number().nullable().optional(),
   rateRationale: z.string(),
-  advanceRatePct: z.number().nullable(),
-  tenorDaysMin: z.number().int().nullable(),
-  tenorDaysMax: z.number().int().nullable(),
-  tenorNote: z.string().nullable(),
-  currency: z.string().nullable(),
+  advanceRatePct: z.number().nullable().optional(),
+  tenorDaysMin: z.number().int().nullable().optional(),
+  tenorDaysMax: z.number().int().nullable().optional(),
+  tenorNote: z.string().nullable().optional(),
+  currency: z.string().nullable().optional(),
   securityTerms: z.string(),
   conditionsPrecedent: z.string(),
 });
