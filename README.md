@@ -247,3 +247,4 @@ is not called by the deployed app.
 | `Capital_Sourcing_System/providers_db/providers.json` | The `Provider` table, seeded by `scripts/import-legacy-providers.ts` |
 | `application-pack-builder` skill | Not yet ported — the gap-analysis/RFQ-drafting output; a natural next addition alongside the matching step's reasoning upgrade |
 | `lender-benchmark` skill | `runLenderBenchmark` (src/agents/benchmark-agent.ts) + the on-demand `/api/deals/:id/benchmark` route |
+
