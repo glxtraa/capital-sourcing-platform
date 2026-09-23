@@ -176,25 +176,37 @@ DATABASE_URL                            <- a separately, manually-created var (s
 INNGEST_WORKFLOW_INNGEST_EVENT_KEY      <- the real event key
 INNGEST_WORKFLOW_INNGEST_SIGNING_KEY    <- the real signing key
 INNGEST_EVENT_KEY / INNGEST_SIGNING_KEY <- separately, manually-created vars (stale/empty)
+
+BLOB2_READ_WRITE_TOKEN                  <- the real token (store happened to be named "Blob2")
+BLOB_READ_WRITE_TOKEN                   <- not injected under this name at all
 ```
 
-Two fixes, do both:
+The Blob case is worth its own note: Vercel's newer Blob "Connections" UI defaults to OIDC
+federation and only auto-injects `BLOB_STORE_ID`/`BLOB_WEBHOOK_PUBLIC_KEY` — it does NOT inject
+`BLOB_READ_WRITE_TOKEN` under any name by default anymore. That matters here specifically
+because this app's upload flow (`@vercel/blob/client`'s `handleUpload`, for direct
+browser-to-Blob uploads — see "Why PDFs..." above) calls
+`generateClientTokenFromReadWriteToken` internally, which **requires the actual static token**;
+OIDC only covers direct server-side `put()`/`del()` calls, not client-upload token issuance. Get
+the real value from the store's own page → the `.env.local` tab next to its quickstart snippet
+(not the "Connections" tab, which won't show it).
 
-1. **In the Vercel dashboard**: open the prefixed variable, copy its value, and paste it into
-   the plain-named one (edit the existing var rather than trying to rename the integration's
-   copy). This is the only thing that fixes `npx prisma migrate deploy`/`prisma studio`, since
-   the Prisma CLI reads `DATABASE_URL` straight from the OS environment before any of this
-   app's own code runs.
+Two fixes, do both, for every case above:
+
+1. **In the Vercel dashboard**: open the prefixed variable (or the store's `.env.local` tab for
+   Blob), copy its value, and paste it into the plain-named one (edit the existing var rather
+   than trying to rename the integration's copy). This is the only thing that fixes
+   `npx prisma migrate deploy`/`prisma studio`, since the Prisma CLI reads `DATABASE_URL`
+   straight from the OS environment before any of this app's own code runs.
 2. **Already handled in code** (`src/lib/env.ts`): the deployed app itself resolves
-   `DATABASE_URL` and the two Inngest keys from a list of known integration-prefixed fallback
-   names if the plain one is empty, so the live app keeps working even if step 1 is missed or a
-   resource gets renamed/reconnected later. If your integration produced a name not in that
-   fallback list, add it there rather than only patching the dashboard.
+   `DATABASE_URL`, the two Inngest keys, and `BLOB_READ_WRITE_TOKEN` from a list of known
+   integration-prefixed fallback names if the plain one is empty, so the live app keeps working
+   even if step 1 is missed or a resource gets renamed/reconnected later. If your integration
+   produced a name not in that fallback list (e.g. you named a store something other than
+   "Blob2"), add it there rather than only patching the dashboard.
 
 Also worth a once-over: delete any leftover `ANTHROPIC_API_KEY`/`ANTHROPIC_MODEL` vars from
-before this app moved to OpenRouter — they're unused now — and confirm `BLOB_READ_WRITE_TOKEN`
-actually holds a token (starts with `vercel_blob_rw_`), since Vercel's own Blob product should
-set that exact name directly without prefixing.
+before this app moved to OpenRouter — they're unused now.
 
 ## Keeping strangers from burning your API budget
 

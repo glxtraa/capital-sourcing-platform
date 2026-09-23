@@ -50,3 +50,29 @@ export function resolveInngestEventKey(): string | undefined {
 export function resolveInngestSigningKey(): string | undefined {
   return process.env.INNGEST_SIGNING_KEY || process.env.INNGEST_WORKFLOW_INNGEST_SIGNING_KEY;
 }
+
+// Whatever you happened to name the Blob store when creating it (e.g.
+// connecting a second store named "Blob2" produces BLOB2_READ_WRITE_TOKEN)
+// -- add more candidates here if you rename/recreate the store again.
+const BLOB_TOKEN_FALLBACKS = ["BLOB2_READ_WRITE_TOKEN", "BLOB_STORE_READ_WRITE_TOKEN"];
+
+/**
+ * Call before any @vercel/blob operation (put/del/handleUpload/upload) --
+ * the SDK reads process.env.BLOB_READ_WRITE_TOKEN internally, not a value
+ * passed explicitly through this app's own code, so this has to mutate the
+ * env var in place, same as resolveDatabaseUrl above. Client-upload token
+ * generation (handleUpload -> generateClientTokenFromReadWriteToken)
+ * specifically requires this static token -- Vercel's newer OIDC-based
+ * Blob auth does NOT cover this flow, only direct server-side put()/del().
+ */
+export function resolveBlobReadWriteToken(): string | undefined {
+  if (process.env.BLOB_READ_WRITE_TOKEN) return process.env.BLOB_READ_WRITE_TOKEN;
+  for (const name of BLOB_TOKEN_FALLBACKS) {
+    const value = process.env[name];
+    if (value) {
+      process.env.BLOB_READ_WRITE_TOKEN = value;
+      return value;
+    }
+  }
+  return undefined;
+}

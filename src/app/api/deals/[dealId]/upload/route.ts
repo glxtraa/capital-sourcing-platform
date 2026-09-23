@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 import { db } from "@/lib/db";
+import { resolveBlobReadWriteToken } from "@/lib/env";
 
 /**
  * Issues a short-lived client upload token so the browser can PUT the file
@@ -33,6 +34,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ dea
   }
 
   const body = (await request.json()) as HandleUploadBody;
+  resolveBlobReadWriteToken(); // see src/lib/env.ts -- Vercel's Blob store connection
+  // doesn't inject BLOB_READ_WRITE_TOKEN under the plain name by default.
 
   try {
     const jsonResponse = await handleUpload({
