@@ -62,19 +62,26 @@ export function DealActions({ dealId, status, hasMatches }: { dealId: string; st
   }
 
   // Extraction is safe to (re-)run any time there are documents to read —
-  // it always recomputes from scratch, so this doubles as the recovery
-  // path for a deal stuck mid-pipeline (e.g. from before this app removed
-  // its background job system) with no separate "retry" concept needed.
-  const canExtract = status !== "EXTRACTING";
-  const canMatch = status === "NEEDS_REVIEW" || status === "READY" || status === "COMPLETE";
+  // it always recomputes from scratch, so this doubles as the recovery path
+  // for a deal stuck mid-pipeline (e.g. a request that hit the platform's
+  // hard function-duration ceiling before its own status update ran). Never
+  // gate this on the persisted `status`: if it's genuinely running right
+  // now in THIS tab, `pending` already disables the button; gating on
+  // status as well would lock a stuck deal in EXTRACTING forever with no
+  // way to retry from the UI, which is exactly the failure mode this
+  // button exists to recover from.
+  // Same reasoning as extraction above: match/route.ts also always
+  // recomputes from current DB state and is safe to re-run any time, so
+  // this must not gate on MATCHING/RESEARCHING either -- those are exactly
+  // the statuses a timed-out run would leave a deal stuck in.
 
   return (
     <div className="space-y-2">
       <div className="flex gap-2">
-        <Button variant="outline" onClick={runExtract} disabled={!canExtract || pending !== null}>
+        <Button variant="outline" onClick={runExtract} disabled={pending !== null}>
           {pending === "extract" ? "Extracting…" : "Run extraction"}
         </Button>
-        <Button variant="outline" onClick={runMatch} disabled={!canMatch || pending !== null}>
+        <Button variant="outline" onClick={runMatch} disabled={pending !== null}>
           {pending === "match"
             ? "Matching… (can take a minute if new providers need researching)"
             : status === "COMPLETE"
