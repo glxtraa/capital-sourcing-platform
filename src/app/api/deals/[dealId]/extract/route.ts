@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { mergeExtractions } from "@/agents/merge";
-import type { DocumentExtraction } from "@/dsl/schema";
+import { DocumentExtractionSchema, type DocumentExtraction } from "@/dsl/schema";
 
 /**
  * Finalizes extraction for a deal: merges every document's already-stored
@@ -45,33 +45,78 @@ export async function POST(_req: Request, { params }: { params: Promise<{ dealId
     );
   }
 
-  const extractions: DocumentExtraction[] = documents.map((doc) => {
-    const extraction = doc.extractedFieldsRaw as unknown as DocumentExtraction;
-    return {
-      ...extraction,
-      parties: extraction.parties.map((p) => ({ ...p, sourceDocuments: [doc.fileName] })),
-    };
-  });
+  try {
+    const extractions: DocumentExtraction[] = documents.map((doc) => {
+      const extraction = DocumentExtractionSchema.parse(doc.extractedFieldsRaw);
+      return {
+        ...extraction,
+        parties: extraction.parties.map((p) => ({ ...p, sourceDocuments: [doc.fileName] })),
+      };
+    });
 
-  const merged = mergeExtractions(extractions);
+    const merged = mergeExtractions(extractions);
 
-  await db.$transaction([
-    db.party.deleteMany({ where: { dealId } }),
-    db.financingAsk.deleteMany({ where: { dealId } }),
-    db.riskFlag.deleteMany({ where: { dealId } }),
-    db.party.createMany({
-      data: merged.parties.map((p) => ({ ...p, dealId, sourceDocuments: undefined })),
-    }),
-    db.financingAsk.createMany({ data: merged.financingAsks.map((a) => ({ ...a, dealId })) }),
-    db.riskFlag.createMany({ data: merged.riskFlags.map((r) => ({ ...r, dealId })) }),
-    db.deal.update({
-      where: { id: dealId },
-      data: {
-        status: merged.readyForMatching ? "READY" : "NEEDS_REVIEW",
-        reviewerNotes: merged.openQuestions.join("\n"),
-      },
-    }),
-  ]);
+    // Fields are mapped explicitly rather than spread: the Zod DSL carries
+    // fields the Prisma models have no column for (e.g. FinancingAsk's
+    // structureTypeConfidence, Party's sourceDocuments), and spreading one
+    // into createMany throws "Unknown argument" -- which stayed hidden until
+    // a document yielded its first financing ask, since pure sale/purchase
+    // contracts produce none and createMany([]) never validates a field.
+    await db.$transaction([
+      db.party.deleteMany({ where: { dealId } }),
+      db.financingAsk.deleteMany({ where: { dealId } }),
+      db.riskFlag.deleteMany({ where: { dealId } }),
+      db.party.createMany({
+        data: merged.parties.map((p) => ({
+          dealId,
+          role: p.role,
+          legalName: p.legalName,
+          jurisdiction: p.jurisdiction,
+          isListed: p.isListed,
+          publicRating: p.publicRating,
+          bankName: p.bankName,
+          bankAccount: p.bankAccount,
+          notes: p.notes,
+          primaryRightHolderName: p.primaryRightHolderName,
+          primaryRightHolderVerified: p.primaryRightHolderVerified,
+        })),
+      }),
+      db.financingAsk.createMany({
+        data: merged.financingAsks.map((a) => ({
+          dealId,
+          structureType: a.structureType,
+          amount: a.amount,
+          currency: a.currency,
+          advanceRatePct: a.advanceRatePct,
+          tenorDaysMin: a.tenorDaysMin,
+          tenorDaysMax: a.tenorDaysMax,
+          tenorNote: a.tenorNote,
+          recurring: a.recurring,
+          recurringNote: a.recurringNote,
+        })),
+      }),
+      db.riskFlag.createMany({
+        data: merged.riskFlags.map((r) => ({
+          dealId,
+          category: r.category,
+          severity: r.severity,
+          description: r.description,
+        })),
+      }),
+      db.deal.update({
+        where: { id: dealId },
+        data: {
+          status: merged.readyForMatching ? "READY" : "NEEDS_REVIEW",
+          reviewerNotes: merged.openQuestions.join("\n"),
+        },
+      }),
+    ]);
 
-  return NextResponse.json({ dealId, readyForMatching: merged.readyForMatching });
+    return NextResponse.json({ dealId, readyForMatching: merged.readyForMatching });
+  } catch (error) {
+    return NextResponse.json(
+      { error: `Failed to finalize the deal spec: ${error instanceof Error ? error.message : String(error)}` },
+      { status: 500 },
+    );
+  }
 }

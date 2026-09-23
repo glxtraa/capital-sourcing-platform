@@ -1,4 +1,4 @@
-import type { FinancingAsk } from "@prisma/client";
+import type { FinancingAsk, Party } from "@prisma/client";
 
 /**
  * Deliberately a narrow structural type (just the fields this file reads)
@@ -182,4 +182,32 @@ export function matchAllProviders(
   return providers
     .map((p) => matchProvider(p, deal, ask))
     .sort((a, b) => Number(b.eligibleOnPaper) - Number(a.eligibleOnPaper));
+}
+
+/**
+ * The deal-side inputs matchProvider/matchAllProviders need, derived from a
+ * deal's extracted parties and financing asks. Shared by the match route,
+ * the research route (which builds its search hint from the same values),
+ * and the deal page (which recomputes the criteria table live) so the three
+ * can't drift apart. A deal can have more than one ask; matching runs
+ * against the first, same as before this was extracted.
+ */
+export function buildMatchInputs(
+  parties: Pick<Party, "role" | "jurisdiction">[],
+  financingAsks: Pick<FinancingAsk, "amount" | "structureType" | "currency">[],
+) {
+  const borrower = parties.find((p) => p.role === "BORROWER");
+  const obligor = parties.find((p) => p.role === "OBLIGOR");
+  const primaryAsk = financingAsks[0];
+  return {
+    dealInput: {
+      borrowerJurisdiction: borrower?.jurisdiction ?? null,
+      obligorJurisdiction: obligor?.jurisdiction ?? null,
+    },
+    askInput: {
+      amount: primaryAsk?.amount ?? null,
+      structureType: primaryAsk?.structureType ?? ("UNKNOWN" as const),
+    },
+    currency: primaryAsk?.currency ?? null,
+  };
 }

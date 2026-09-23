@@ -8,28 +8,39 @@ import { ProviderSchema, type ProviderDTO } from "@/dsl/provider-schema";
 const SYSTEM_PROMPT = readFileSync(join(process.cwd(), "src/agents/prompts/research.md"), "utf-8");
 const RESPONSE_FORMAT = zodToResponseFormat(ProviderSchema, "Provider");
 
+export interface ProviderFindings {
+  findings: string;
+  citedUrls: string[];
+}
+
 /**
  * Mode B of the productionized `capital-provider-research` skill, in two
- * steps rather than a manually-managed multi-turn tool-call loop:
+ * steps rather than a manually-managed multi-turn tool-call loop -- and
+ * exported as two SEPARATE functions, each called from its own API route
+ * (see api/deals/:dealId/research), because both steps are real model
+ * latency (a web-search-augmented generation, then a large structured-output
+ * generation) and together they can exceed Vercel Hobby's 60s hard function
+ * cap. One step per request keeps each inside it.
  *
- *   1. A web-search-augmented call (OpenRouter's `web` plugin — works with
- *      any model, unlike Claude's own hosted search tool, by routing
- *      through Exa) that researches freely and writes up findings in
- *      plain text, with citations attached as message annotations.
- *   2. A second, plain call that structures those findings into the
- *      Provider schema via strict JSON-schema mode.
+ *   1. researchProviderFindings: a web-search-augmented call (OpenRouter's
+ *      `web` plugin -- works with any model, unlike Claude's own hosted
+ *      search tool, by routing through Exa) that researches freely and
+ *      writes up findings in plain text, with citations attached as message
+ *      annotations.
+ *   2. structureProviderFindings: a second, plain call that structures
+ *      those findings into the Provider schema via strict JSON-schema mode.
  *
  * Splitting research from structuring (rather than forcing both in one
- * call) is deliberate: not every OpenRouter model/engine combination
- * reliably honors `response_format` and the `web` plugin simultaneously,
- * and separating them means the citations OpenRouter returns as
- * annotations can be fed back in explicitly for the structuring step to
- * cite properly in `sources`.
+ * call) is deliberate on its own merits too: not every OpenRouter
+ * model/engine combination reliably honors `response_format` and the `web`
+ * plugin simultaneously, and separating them means the citations OpenRouter
+ * returns as annotations can be fed back in explicitly for the structuring
+ * step to cite properly in `sources`.
  */
-export async function researchNewProvider(
+export async function researchProviderFindings(
   providerNameOrHint: string,
   dealContext: string,
-): Promise<ProviderDTO> {
+): Promise<ProviderFindings> {
   const client = getOpenRouterClient();
 
   const researchParams: ChatCompletionCreateParamsNonStreaming & { plugins?: readonly unknown[] } = {
@@ -61,6 +72,15 @@ export async function researchNewProvider(
   const citedUrls = annotations
     .filter((a) => a.type === "url_citation" && a.url_citation)
     .map((a) => a.url_citation!.url);
+
+  return { findings, citedUrls };
+}
+
+export async function structureProviderFindings(
+  providerNameOrHint: string,
+  { findings, citedUrls }: ProviderFindings,
+): Promise<ProviderDTO> {
+  const client = getOpenRouterClient();
 
   const structureResponse = await client.chat.completions.create({
     model: RESEARCH_MODEL,

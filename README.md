@@ -23,8 +23,9 @@ works end-to-end.
 - The extraction, research, and benchmark agents (`src/agents/`) — real OpenRouter API calls
   (open-weight models, one API key), real prompts, real structured-output validation.
 - The extraction → matching → (if nothing matches) research → matching-again pipeline
-  (`src/app/api/deals/[dealId]/extract/route.ts` and `.../match/route.ts`) — plain synchronous
-  API routes, no background job system.
+  (`.../documents/[documentId]/extract`, `.../extract`, `.../match`, and `.../research` under
+  `src/app/api/deals/[dealId]/`) — plain short API routes orchestrated by the UI one request at a
+  time, no background job system.
 - Every API route and UI page.
 - The migration script that seeds real data from the manual system's `providers.json`
   (`scripts/import-legacy-providers.ts`) — dry-run validated against the actual 31-entry file
@@ -49,14 +50,19 @@ works end-to-end.
 
 ```
 Upload (UI) → Vercel Blob → UploadedDocument rows
-    → POST .../extract: per-file extraction (OpenRouter, strict JSON schema) → merge → DealSpec
-       (runs synchronously; returns once done)
-    → (user clicks "Run matching") POST .../match: mechanical eligibility filter (TS port of
-       the manual query_providers.py) against the Provider table
-        → if zero eligible: research a new provider (OpenRouter + `web` plugin → structure →
-           upsert into the Provider table), then re-run the mechanical filter — looped up to
-           MAX_AUTO_RESEARCH_ATTEMPTS times, all within the same request (the feedback loop)
-        → write ProviderMatch rows, deal.status = COMPLETE
+    → for each file, ONE AT A TIME: POST .../documents/:id/extract
+       (OCR + one OpenRouter strict-JSON-schema call; also classifies the file against the
+        Standard Document Taxonomy)
+    → POST .../extract: fast DB-only merge of every file's result → DealSpec
+       (no LLM calls; 409s if any file hasn't been extracted yet)
+    → (user clicks "Run matching") the UI drives the loop, one short request per step:
+        POST .../match      mechanical eligibility filter (TS port of the manual
+                            query_providers.py) against the Provider table → ProviderMatch rows
+        if zero eligible, up to MAX_AUTO_RESEARCH_ATTEMPTS times:
+          POST .../research {step:"search"}     web-search-augmented research (OpenRouter `web`
+                                                plugin), returns findings
+          POST .../research {step:"structure"}  structure findings → upsert into Provider
+          POST .../match                        re-run the filter
     → (on demand, from the UI) POST .../benchmark: OpenRouter call over the deal + its matches
        → TermSheet row
 ```
@@ -68,14 +74,23 @@ actual scale (a handful of documents at a time, not a high-volume multi-tenant p
 turned out to be almost pure operational overhead — separate event/signing keys, a dashboard
 that doesn't clearly surface sync status, and a real incident where the Vercel↔Inngest
 integration never performed its first sync, so events queued with zero matching functions and
-nothing ever ran. It was removed. The routes below now just `await` the work directly and return
-when done, with `maxDuration` raised to give real headroom (check your Vercel plan's actual
-function duration cap and adjust if a large batch times out) — fully debuggable in ordinary
-function logs, and every route is safe to call again if it does time out, since each one always
-recomputes from current state rather than assuming partial progress. If you outgrow this later
-(hundreds of documents, many concurrent users), Inngest or Trigger.dev are the right tools to
-reach for again — just budget time for the same kind of integration friction described in
-"Environment variable troubleshooting" below.
+nothing ever ran. It was removed.
+
+**Why the work is split into so many small requests.** Vercel's Hobby plan hard-caps every
+serverless function at 60 seconds, *regardless of the `maxDuration` a route declares* (only
+paid plans honor a higher value). An earlier version ran all of a deal's extraction in one
+request, and all of the match-research loop in another; on a real multi-document, scanned,
+bilingual contract set either could exceed 60s, get killed mid-request, and leave the deal
+stuck in `EXTRACTING`/`MATCHING` with its status update never written. So every request now does
+at most one slow model step (one document's OCR + extraction; one web-search call; one
+structuring call), and the browser orchestrates the sequence (`UploadDropzone`, `DealActions`).
+The work that needs no model (merging, matching) is its own fast route. Every route recomputes
+from current state and is safe to call again, and the Run extraction / Run matching buttons are
+deliberately never disabled by a deal's persisted status — they're the recovery path for a
+stuck deal. If a *single* step is still too slow on Hobby (one very large scan), upgrading to
+Pro removes the ceiling. If you outgrow this later (hundreds of documents, many concurrent
+users), Inngest or Trigger.dev are the right tools to reach for again — just budget time for the
+same kind of integration friction described in "Environment variable troubleshooting" below.
 
 **Why OpenRouter instead of a single model provider's own SDK.** One API key covers every model
 below (and hundreds more) — swapping the extraction/research/benchmark model is an env var, not a
@@ -142,7 +157,7 @@ npm run seed:providers       # seeds real provider data from the manual system, 
 npm run dev                  # http://localhost:3000
 ```
 
-That's it — extraction/matching/research run as plain API routes, so there's no separate
+That's it — extraction/matching/research run as plain short API routes, so there's no separate
 background-job dev server to also run.
 
 Without a Postgres available, `npm run build` still succeeds (every page is
@@ -243,7 +258,7 @@ is not called by the deployed app.
 | A company's `Capital_Sourcing/deal_profile.json`, hand-written | `DealSpec` (src/dsl/schema.ts), agent-extracted |
 | `deal-intake` skill, Steps 0-1 (classify structure type, read the data room) | `extractFromDocument` + `mergeExtractions` (src/agents/) |
 | `deal-intake` skill, Step 2 (`query_providers.py` + reasoning about gating factors) | `matchAllProviders` (src/lib/matching.ts), called from `.../match/route.ts` |
-| `capital-provider-research` skill (Modes A/B) | `researchNewProvider` (src/agents/research-agent.ts), called from the same route when nothing matches |
+| `capital-provider-research` skill (Modes A/B) | `researchProviderFindings` + `structureProviderFindings` (src/agents/research-agent.ts), called from `.../research/route.ts` when nothing matches |
 | `Capital_Sourcing_System/providers_db/providers.json` | The `Provider` table, seeded by `scripts/import-legacy-providers.ts` |
 | `application-pack-builder` skill | Not yet ported — the gap-analysis/RFQ-drafting output; a natural next addition alongside the matching step's reasoning upgrade |
 | `lender-benchmark` skill | `runLenderBenchmark` (src/agents/benchmark-agent.ts) + the on-demand `/api/deals/:id/benchmark` route |

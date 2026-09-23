@@ -9,6 +9,8 @@ import { runLenderBenchmark } from "@/agents/benchmark-agent";
  * normal serverless function's default timeout — unlike provider
  * research, it doesn't loop on web search.
  */
+export const maxDuration = 60;
+
 export async function POST(_req: Request, { params }: { params: Promise<{ dealId: string }> }) {
   const { dealId } = await params;
 
@@ -29,30 +31,37 @@ export async function POST(_req: Request, { params }: { params: Promise<{ dealId
     );
   }
 
-  const output = await runLenderBenchmark({
-    deal,
-    parties: deal.parties,
-    financingAsks: deal.financingAsks,
-    riskFlags: deal.riskFlags,
-    matches: deal.providerMatches,
-  });
+  try {
+    const output = await runLenderBenchmark({
+      deal,
+      parties: deal.parties,
+      financingAsks: deal.financingAsks,
+      riskFlags: deal.riskFlags,
+      matches: deal.providerMatches,
+    });
 
-  const termSheet = await db.termSheet.create({
-    data: {
-      dealId,
-      proposedRatePct: output.proposedRatePct,
-      rateRationale: output.rateRationale,
-      advanceRatePct: output.advanceRatePct,
-      tenorDaysMin: output.tenorDaysMin,
-      tenorDaysMax: output.tenorDaysMax,
-      tenorNote: output.tenorNote,
-      currency: output.currency,
-      securityTerms: output.securityTerms,
-      conditionsPrecedent: output.conditionsPrecedent,
-      benchmarkTableJson: output.benchmarkTable,
-      leverageAssessment: output.leverageAssessment,
-    },
-  });
+    const termSheet = await db.termSheet.create({
+      data: {
+        dealId,
+        proposedRatePct: output.proposedRatePct,
+        rateRationale: output.rateRationale,
+        advanceRatePct: output.advanceRatePct,
+        tenorDaysMin: output.tenorDaysMin,
+        tenorDaysMax: output.tenorDaysMax,
+        tenorNote: output.tenorNote,
+        currency: output.currency,
+        securityTerms: output.securityTerms,
+        conditionsPrecedent: output.conditionsPrecedent,
+        benchmarkTableJson: output.benchmarkTable,
+        leverageAssessment: output.leverageAssessment,
+      },
+    });
 
-  return NextResponse.json(termSheet, { status: 201 });
+    return NextResponse.json(termSheet, { status: 201 });
+  } catch (error) {
+    return NextResponse.json(
+      { error: `Lender benchmark failed: ${error instanceof Error ? error.message : String(error)}` },
+      { status: 500 },
+    );
+  }
 }

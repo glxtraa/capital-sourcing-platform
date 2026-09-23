@@ -5,11 +5,14 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/primitives";
 import type { DealStatus } from "@prisma/client";
 
+const MAX_AUTO_RESEARCH_ATTEMPTS = 3;
+
 export function DealActions({ dealId, status, hasMatches }: { dealId: string; status: DealStatus; hasMatches: boolean }) {
   const router = useRouter();
   const [pending, setPending] = useState<"extract" | "match" | "benchmark" | null>(null);
   const [progressLabel, setProgressLabel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   // Same per-document-then-finalize sequence as UploadDropzone (see that
   // component's own comment for why) -- this route needs its own copy of
@@ -56,20 +59,71 @@ export function DealActions({ dealId, status, hasMatches }: { dealId: string; st
     }
   }
 
+  async function postJson<T>(url: string, body?: unknown, fallbackError = "Request failed."): Promise<T> {
+    const res = await fetch(url, {
+      method: "POST",
+      ...(body !== undefined ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error ?? fallbackError);
+    return data as T;
+  }
+
+  // Matching plus the "zero eligible providers -> research a new one ->
+  // match again" feedback loop, driven from here one short request at a time
+  // (match, then research-search, then research-structure, then match
+  // again...) rather than one long server request -- see match/route.ts and
+  // research/route.ts for why (Vercel Hobby's 60s function cap).
   async function runMatch() {
     setPending("match");
     setError(null);
+    setNotice(null);
     try {
-      const res = await fetch(`/api/deals/${dealId}/match`, { method: "POST" });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? "Failed to run matching.");
+      setProgressLabel("Matching against the provider database…");
+      let { eligibleCount } = await postJson<{ eligibleCount: number }>(
+        `/api/deals/${dealId}/match`,
+        undefined,
+        "Failed to run matching.",
+      );
+
+      let lastResearchError: string | null = null;
+      for (let attempt = 1; eligibleCount === 0 && attempt <= MAX_AUTO_RESEARCH_ATTEMPTS; attempt++) {
+        try {
+          setProgressLabel(`No eligible providers — researching a new one (${attempt}/${MAX_AUTO_RESEARCH_ATTEMPTS}): searching the web…`);
+          const found = await postJson<{ runId: string; hint: string; findings: string; citedUrls: string[] }>(
+            `/api/deals/${dealId}/research`,
+            { step: "search" },
+            "Provider research failed.",
+          );
+          setProgressLabel(`No eligible providers — researching a new one (${attempt}/${MAX_AUTO_RESEARCH_ATTEMPTS}): recording findings…`);
+          await postJson(`/api/deals/${dealId}/research`, { step: "structure", ...found }, "Provider research failed.");
+        } catch (e) {
+          // The failed attempt is already logged on the deal's agent run log
+          // by the route itself; keep going so a transient failure on one
+          // attempt doesn't forfeit the remaining ones.
+          lastResearchError = e instanceof Error ? e.message : String(e);
+        }
+        setProgressLabel("Re-matching with the updated provider database…");
+        ({ eligibleCount } = await postJson<{ eligibleCount: number }>(
+          `/api/deals/${dealId}/match`,
+          undefined,
+          "Failed to run matching.",
+        ));
+      }
+
+      if (eligibleCount === 0) {
+        setNotice(
+          "No provider is eligible on paper for this deal" +
+            (lastResearchError ? ` (last automatic research attempt failed: ${lastResearchError})` : " even after automatic research") +
+            ". Review the criteria in the match list below, or check the agent run log.",
+        );
       }
       router.refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
       setPending(null);
+      setProgressLabel(null);
     }
   }
 
@@ -90,19 +144,13 @@ export function DealActions({ dealId, status, hasMatches }: { dealId: string; st
     }
   }
 
-  // Extraction is safe to (re-)run any time there are documents to read —
-  // it always recomputes from scratch, so this doubles as the recovery path
-  // for a deal stuck mid-pipeline (e.g. a request that hit the platform's
-  // hard function-duration ceiling before its own status update ran). Never
-  // gate this on the persisted `status`: if it's genuinely running right
-  // now in THIS tab, `pending` already disables the button; gating on
-  // status as well would lock a stuck deal in EXTRACTING forever with no
-  // way to retry from the UI, which is exactly the failure mode this
-  // button exists to recover from.
-  // Same reasoning as extraction above: match/route.ts also always
-  // recomputes from current DB state and is safe to re-run any time, so
-  // this must not gate on MATCHING/RESEARCHING either -- those are exactly
-  // the statuses a timed-out run would leave a deal stuck in.
+  // Extraction and matching are both safe to (re-)run any time -- each
+  // always recomputes from current DB state -- so neither button is gated on
+  // the persisted `status`. If a run is genuinely in flight in THIS tab,
+  // `pending` already disables them; gating on status as well would lock a
+  // deal that a killed/timed-out request left stuck in EXTRACTING/MATCHING/
+  // RESEARCHING with no way to retry, which is exactly the failure these
+  // buttons exist to recover from.
 
   return (
     <div className="space-y-2">
@@ -112,7 +160,7 @@ export function DealActions({ dealId, status, hasMatches }: { dealId: string; st
         </Button>
         <Button variant="outline" onClick={runMatch} disabled={pending !== null}>
           {pending === "match"
-            ? "Matching… (can take a minute if new providers need researching)"
+            ? (progressLabel ?? "Matching…")
             : status === "COMPLETE"
               ? "Re-run matching"
               : "Run matching"}
@@ -127,6 +175,7 @@ export function DealActions({ dealId, status, hasMatches }: { dealId: string; st
         </Button>
       </div>
       {error && <p className="text-sm text-red-600">{error}</p>}
+      {notice && <p className="text-sm text-amber-600 dark:text-amber-400">{notice}</p>}
     </div>
   );
 }

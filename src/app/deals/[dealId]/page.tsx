@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle, Badge, EmptyState } from "@/c
 import { DealStatusBadge } from "@/components/DealStatusBadge";
 import { DealStatusPoller } from "@/components/DealStatusPoller";
 import { DealActions } from "@/components/DealActions";
-import { matchProvider, type CriterionStatus } from "@/lib/matching";
+import { matchProvider, buildMatchInputs, type CriterionStatus } from "@/lib/matching";
 import { computeDocumentCoverage } from "@/lib/document-coverage";
 
 export const dynamic = "force-dynamic";
@@ -50,17 +50,7 @@ export default async function DealDetailPage({ params }: { params: Promise<{ dea
   // recomputed live here so the criteria table always reflects the deal's
   // and provider's CURRENT data, not a stale snapshot from whenever "Run
   // matching" last ran.
-  const borrower = deal.parties.find((p) => p.role === "BORROWER");
-  const obligor = deal.parties.find((p) => p.role === "OBLIGOR");
-  const primaryAsk = deal.financingAsks[0];
-  const dealMatchInput = {
-    borrowerJurisdiction: borrower?.jurisdiction ?? null,
-    obligorJurisdiction: obligor?.jurisdiction ?? null,
-  };
-  const askMatchInput = {
-    amount: primaryAsk?.amount ?? null,
-    structureType: primaryAsk?.structureType ?? "UNKNOWN",
-  };
+  const { dealInput: dealMatchInput, askInput: askMatchInput } = buildMatchInputs(deal.parties, deal.financingAsks);
 
   return (
     <div className="space-y-6">
