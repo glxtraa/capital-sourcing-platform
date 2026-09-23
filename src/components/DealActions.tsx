@@ -8,22 +8,51 @@ import type { DealStatus } from "@prisma/client";
 export function DealActions({ dealId, status, hasMatches }: { dealId: string; status: DealStatus; hasMatches: boolean }) {
   const router = useRouter();
   const [pending, setPending] = useState<"extract" | "match" | "benchmark" | null>(null);
+  const [progressLabel, setProgressLabel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Same per-document-then-finalize sequence as UploadDropzone (see that
+  // component's own comment for why) -- this route needs its own copy of
+  // the current document list first since, unlike UploadDropzone, it isn't
+  // the one that just uploaded the files.
   async function runExtract() {
     setPending("extract");
     setError(null);
     try {
-      const res = await fetch(`/api/deals/${dealId}/extract`, { method: "POST" });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? "Failed to run extraction.");
+      const dealRes = await fetch(`/api/deals/${dealId}`);
+      if (!dealRes.ok) throw new Error("Failed to load this deal's documents.");
+      const deal = await dealRes.json();
+      const documents: { id: string; fileName: string; extractedFieldsRaw: unknown; documentTypes: string[] }[] =
+        deal.documents ?? [];
+      if (documents.length === 0) throw new Error("No documents uploaded yet.");
+
+      // Skip documents already extracted with a document-type classification
+      // on file -- makes this safe to re-run after a partial failure without
+      // redoing already-successful (and billed) work, while still picking up
+      // anything that's never been processed OR was processed before
+      // documentTypes existed (empty array either way).
+      const pendingDocs = documents.filter((d) => d.extractedFieldsRaw == null || d.documentTypes.length === 0);
+      for (let i = 0; i < pendingDocs.length; i++) {
+        setProgressLabel(`Extracting ${pendingDocs[i].fileName} (${i + 1}/${pendingDocs.length})…`);
+        const res = await fetch(`/api/deals/${dealId}/documents/${pendingDocs[i].id}/extract`, { method: "POST" });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error ?? `Extraction failed for ${pendingDocs[i].fileName}.`);
+        }
+      }
+
+      setProgressLabel("Finalizing deal spec…");
+      const finalizeRes = await fetch(`/api/deals/${dealId}/extract`, { method: "POST" });
+      if (!finalizeRes.ok) {
+        const body = await finalizeRes.json().catch(() => ({}));
+        throw new Error(body.error ?? "Failed to finalize the deal spec.");
       }
       router.refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
       setPending(null);
+      setProgressLabel(null);
     }
   }
 
@@ -79,7 +108,7 @@ export function DealActions({ dealId, status, hasMatches }: { dealId: string; st
     <div className="space-y-2">
       <div className="flex gap-2">
         <Button variant="outline" onClick={runExtract} disabled={pending !== null}>
-          {pending === "extract" ? "Extracting…" : "Run extraction"}
+          {pending === "extract" ? (progressLabel ?? "Extracting…") : "Run extraction"}
         </Button>
         <Button variant="outline" onClick={runMatch} disabled={pending !== null}>
           {pending === "match"

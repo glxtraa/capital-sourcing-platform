@@ -1,29 +1,26 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { extractFromDocument } from "@/agents/extraction-agent";
 import { mergeExtractions } from "@/agents/merge";
 import type { DocumentExtraction } from "@/dsl/schema";
 
 /**
- * Runs extraction directly and synchronously — no background job system.
- * This used to be an Inngest step function; that made sense for a
- * high-volume multi-tenant product needing durable per-step retries, but
- * for this app's actual scale (a handful of documents at a time) it was
- * mostly a source of operational friction (event/signing keys, dashboard
- * syncing that silently didn't happen) for no real benefit. A plain
- * `await` here is fully debuggable in ordinary Vercel function logs and
- * has no separate service to misconfigure.
+ * Finalizes extraction for a deal: merges every document's already-stored
+ * `extractedFieldsRaw` (written by POST .../documents/:documentId/extract,
+ * one call per document) into the deal-level Party/FinancingAsk/RiskFlag
+ * rows. Deliberately does NO LLM/OCR work itself -- that used to happen
+ * here directly (via Promise.all over every document in one request), which
+ * could exceed Vercel Hobby's 60s hard function-duration cap on a real
+ * multi-document, heavily-scanned deal and leave the deal stuck in
+ * EXTRACTING with no way to recover. Splitting per-document extraction into
+ * its own route means THIS route only ever does a DB read + a deterministic
+ * in-memory merge + a DB write, so it should never come close to timing out
+ * on any plan.
  *
- * Trade-off, stated plainly: this ties up one serverless function for as
- * long as extraction takes (OCR + an LLM call per document, run in
- * parallel) rather than returning immediately. `maxDuration` below raises
- * the ceiling accordingly — check your Vercel plan's actual function
- * duration limit and adjust if extraction is timing out on a large batch.
- * If a request does time out, this route is safe to just call again: it
- * always re-reads every document for the deal and overwrites the merged
- * result, so nothing needs manual cleanup first.
+ * Returns 409 if any document hasn't been extracted yet -- the caller
+ * (UploadDropzone / DealActions) is expected to have called the per-document
+ * route for every document first.
  */
-export const maxDuration = 300;
+export const maxDuration = 30;
 
 export async function POST(_req: Request, { params }: { params: Promise<{ dealId: string }> }) {
   const { dealId } = await params;
@@ -36,32 +33,25 @@ export async function POST(_req: Request, { params }: { params: Promise<{ dealId
     return NextResponse.json({ error: "no documents to extract" }, { status: 400 });
   }
 
-  await db.deal.update({ where: { id: dealId }, data: { status: "EXTRACTING" } });
-
-  let extractions: DocumentExtraction[];
-  try {
-    extractions = await Promise.all(
-      documents.map(async (doc) => {
-        const res = await fetch(doc.blobUrl);
-        const buffer = Buffer.from(await res.arrayBuffer());
-        const extraction = await extractFromDocument(buffer, doc.mimeType, doc.fileName);
-        await db.uploadedDocument.update({
-          where: { id: doc.id },
-          data: { extractedFieldsRaw: extraction, documentTypes: extraction.documentTypes },
-        });
-        return {
-          ...extraction,
-          parties: extraction.parties.map((p) => ({ ...p, sourceDocuments: [doc.fileName] })),
-        };
-      }),
-    );
-  } catch (error) {
-    await db.deal.update({ where: { id: dealId }, data: { status: "NEEDS_REVIEW" } });
+  const unprocessed = documents.filter((d) => d.extractedFieldsRaw == null);
+  if (unprocessed.length > 0) {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Extraction failed" },
-      { status: 500 },
+      {
+        error:
+          `${unprocessed.length} document(s) still need extraction before this can be finalized: ` +
+          unprocessed.map((d) => d.fileName).join(", "),
+      },
+      { status: 409 },
     );
   }
+
+  const extractions: DocumentExtraction[] = documents.map((doc) => {
+    const extraction = doc.extractedFieldsRaw as unknown as DocumentExtraction;
+    return {
+      ...extraction,
+      parties: extraction.parties.map((p) => ({ ...p, sourceDocuments: [doc.fileName] })),
+    };
+  });
 
   const merged = mergeExtractions(extractions);
 
