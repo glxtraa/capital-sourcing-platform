@@ -5,8 +5,8 @@ import { SITE_AUTH_COOKIE, expectedCookieValue } from "@/lib/site-auth";
  * Runs on every request except the ones excluded by `config.matcher` below.
  * If SITE_PASSWORD isn't set, this is a no-op (see site-auth.ts) — the app
  * stays exactly as open as it was before. If it is set, every page and API
- * route (other than the login flow and Inngest's own callback) requires a
- * cookie matching sha256(SITE_PASSWORD).
+ * route (other than the login flow itself) requires a cookie matching
+ * sha256(SITE_PASSWORD).
  */
 export async function proxy(request: NextRequest) {
   const expected = await expectedCookieValue();
@@ -29,13 +29,10 @@ export const config = {
   matcher: [
     /*
      * Everything EXCEPT:
-     * - /api/inngest: Inngest's own servers call this directly (already
-     *   authenticated via its own signing key, not a browser cookie) --
-     *   gating it here would break the extraction/matching/research pipeline.
      * - /api/site-auth: the login-check endpoint itself.
      * - /login: the password entry page itself.
      * - Next.js internals and common static assets.
      */
-    "/((?!api/inngest|api/site-auth|login|_next/static|_next/image|favicon.ico).*)",
+    "/((?!api/site-auth|login|_next/static|_next/image|favicon.ico).*)",
   ],
 };

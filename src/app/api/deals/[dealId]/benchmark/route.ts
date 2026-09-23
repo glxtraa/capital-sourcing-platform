@@ -5,9 +5,9 @@ import { runLenderBenchmark } from "@/agents/benchmark-agent";
 /**
  * The productionized `lender-benchmark` skill, exposed as an on-demand
  * action ("Benchmark this deal for a new lender" button), not part of the
- * automatic pipeline. Synchronous (not an Inngest event) because a single
- * Claude call here is well within a normal serverless function timeout —
- * unlike provider research, it doesn't loop on web search.
+ * automatic pipeline. A single OpenRouter call here is well within a
+ * normal serverless function's default timeout — unlike provider
+ * research, it doesn't loop on web search.
  */
 export async function POST(_req: Request, { params }: { params: Promise<{ dealId: string }> }) {
   const { dealId } = await params;

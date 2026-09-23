@@ -1,9 +1,9 @@
 /**
- * Vercel Marketplace integrations (Neon, Inngest, etc.) often prefix the
- * env vars they create with the resource's own name rather than the plain
- * name a self-hosted app expects — e.g. connecting a Neon database named
- * "Neon Database" produces `NEON_DATABASE_DATABASE_URL`, not `DATABASE_URL`,
- * and Vercel doesn't let you rename an integration-managed variable. This
+ * Vercel Marketplace integrations (Neon, Blob, etc.) often prefix the env
+ * vars they create with the resource's own name rather than the plain name
+ * a self-hosted app expects — e.g. connecting a Neon database named "Neon
+ * Database" produces `NEON_DATABASE_DATABASE_URL`, not `DATABASE_URL`, and
+ * Vercel doesn't let you rename an integration-managed variable. This
  * module resolves the plain name from the first populated fallback so the
  * app keeps working regardless of what a given integration happened to
  * name things, rather than requiring an exact manual copy-paste in the
@@ -41,14 +41,6 @@ export function resolveDatabaseUrl(): string | undefined {
     }
   }
   return undefined;
-}
-
-export function resolveInngestEventKey(): string | undefined {
-  return process.env.INNGEST_EVENT_KEY || process.env.INNGEST_WORKFLOW_INNGEST_EVENT_KEY;
-}
-
-export function resolveInngestSigningKey(): string | undefined {
-  return process.env.INNGEST_SIGNING_KEY || process.env.INNGEST_WORKFLOW_INNGEST_SIGNING_KEY;
 }
 
 // Whatever you happened to name the Blob store when creating it (e.g.

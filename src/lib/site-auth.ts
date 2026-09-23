@@ -3,8 +3,8 @@
  * (that's `src/lib/auth.ts`'s job, still stubbed to a single `demo-org`).
  * The goal here is narrower: this app is deployed publicly on Vercel and
  * every request that reaches a real page or API route can trigger paid
- * OpenRouter calls, Blob storage writes, and Inngest function runs. One
- * shared password behind a cookie is enough to stop a stranger from
+ * OpenRouter calls and Blob storage writes. One shared password behind a
+ * cookie is enough to stop a stranger from
  * finding the URL and burning through your API budget; it is NOT enough
  * to protect genuinely confidential deal documents from a determined
  * attacker — see auth.ts's own comment for what that would take.

@@ -2,13 +2,11 @@ import type { FinancingAsk } from "@prisma/client";
 
 /**
  * Deliberately a narrow structural type (just the fields this file reads)
- * rather than Prisma's generated `Provider` type: this function is called
- * both directly (real `Date` objects) and from inside an Inngest step
- * (where step outputs round-trip through JSON, turning every `Date` into a
- * `string` — Inngest's durability guarantee requires everything crossing a
- * step boundary to be serializable). A narrow type that only names what's
- * actually used here is satisfied by both shapes without fighting Prisma's
- * generated type field-by-field.
+ * rather than Prisma's generated `Provider` type, so this stays easy to
+ * call with either a real Prisma row or a plain object built from one
+ * (e.g. after a JSON round-trip) without fighting the generated type
+ * field-by-field. `lastVerified` accepts both `Date` and `string` for the
+ * same reason.
  */
 interface MatchableProvider {
   id: string;

@@ -16,9 +16,11 @@ import { Button } from "@/components/ui/primitives";
  *      4.4MB scanned coal contract).
  *   3. POST /api/deals/:id/documents with each resulting blob URL (tiny
  *      JSON, not the file itself) to record it.
- *   4. POST /api/deals/:id/extract once every file is registered, to kick
- *      off the pipeline. This component then navigates to the deal page,
- *      where status polling (see DealStatusPoller) takes over.
+ *   4. POST /api/deals/:id/extract once every file is registered — this
+ *      call runs extraction directly and doesn't return until it's done
+ *      (no background job system; see that route's own comment for why),
+ *      so this step is the slow one. Only once it resolves does this
+ *      component navigate to the deal page.
  */
 export function UploadDropzone() {
   const router = useRouter();
@@ -77,9 +79,12 @@ export function UploadDropzone() {
         if (!registerRes.ok) throw new Error(`Uploaded ${file.name} but failed to register it.`);
       }
 
-      setProgress("Starting extraction…");
+      setProgress("Extracting documents… this can take a minute for several files.");
       const extractRes = await fetch(`/api/deals/${deal.id}/extract`, { method: "POST" });
-      if (!extractRes.ok) throw new Error("Documents uploaded, but failed to start extraction.");
+      if (!extractRes.ok) {
+        const body = await extractRes.json().catch(() => ({}));
+        throw new Error(body.error ?? "Documents uploaded, but extraction failed.");
+      }
 
       router.push(`/deals/${deal.id}`);
     } catch (e) {

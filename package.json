@@ -10,8 +10,7 @@
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
     "db:studio": "prisma studio",
-    "seed:providers": "tsx scripts/import-legacy-providers.ts",
-    "inngest:dev": "npx inngest-cli@latest dev"
+    "seed:providers": "tsx scripts/import-legacy-providers.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
@@ -19,7 +18,6 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "date-fns": "^4.4.0",
-    "inngest": "^3.54.2",
     "lucide-react": "^1.47.0",
     "next": "16.3.6",
     "openai": "^6.49.0",
