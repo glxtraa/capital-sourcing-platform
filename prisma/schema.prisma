@@ -1,0 +1,286 @@
+// Capital Sourcing Platform — data model
+//
+// This mirrors the manual system's file-based conventions
+// (Capital_Sourcing_System/providers_db/schema.md and each deal's Capital_Sourcing/*.json/*.md)
+// as a real relational schema. Read schema.md alongside this file if you're porting logic —
+// every enum and field here has a direct written counterpart in that document.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Deals — one per company/borrower situation, the productionized version of
+// a "company folder" in the manual system (TISI_FM_Data_Room_2608/, CBS/, Coal/).
+// ---------------------------------------------------------------------------
+
+enum DealStatus {
+  UPLOADING // files are being added, extraction not yet run
+  EXTRACTING // extraction agent is running
+  NEEDS_REVIEW // extraction complete, but has gaps a human should fill or confirm
+  READY // deal spec confirmed, ready to match against providers
+  MATCHING // matching/research agent is running
+  RESEARCHING // a provider-database gap was found; research agent is filling it (feedback loop)
+  COMPLETE // shortlist + gap analysis (+ optional term sheet) produced
+  ARCHIVED
+}
+
+enum FinancingStructureType {
+  POST_SHIPMENT_RECEIVABLES_DISCOUNTING
+  PRE_SHIPMENT_PROCUREMENT_FINANCE
+  PRE_EXPORT_BORROWING_BASE
+  ENTERPRISE_SCF_REVERSE_FACTORING
+  UNKNOWN // extraction couldn't confidently classify yet — surfaced for human input
+}
+
+model Deal {
+  id          String     @id @default(cuid())
+  orgId       String // multi-tenant scoping — see lib/auth.ts
+  name        String // display name, e.g. "Favorite Medium Asia / TISI"
+  status      DealStatus @default(UPLOADING)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  documents      UploadedDocument[]
+  parties        Party[]
+  financingAsks  FinancingAsk[]
+  riskFlags      RiskFlag[]
+  providerMatches ProviderMatch[]
+  researchRuns   ResearchRun[]
+  termSheets     TermSheet[]
+
+  // Free-form notes a human reviewer adds during NEEDS_REVIEW — feeds back into
+  // the next extraction/matching pass rather than being a dead-end comment box.
+  reviewerNotes String?
+}
+
+// ---------------------------------------------------------------------------
+// The DSL, as relations. See src/dsl/schema.ts for the Zod mirror used at the
+// API boundary (what the extraction agent must emit, validated before it ever
+// reaches these tables).
+// ---------------------------------------------------------------------------
+
+enum PartyRole {
+  BORROWER // the party seeking financing (called "seller" in some manual docs)
+  OBLIGOR // the account debtor / buyer who ultimately pays
+  SUPPLIER // upstream counterparty the borrower must pay (relevant for
+  // PRE_SHIPMENT_PROCUREMENT_FINANCE / PRE_EXPORT_BORROWING_BASE deals)
+  INTERMEDIARY // a permit-holder/trader sitting between a primary right-holder
+  // and the borrower — chain-of-title risk lives here (see PT KEM's
+  // IUP-OPK supplier in the worked examples)
+  GUARANTOR
+}
+
+model Party {
+  id           String    @id @default(cuid())
+  dealId       String
+  deal         Deal      @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  role         PartyRole
+  legalName    String
+  jurisdiction String?
+  isListed     Boolean?
+  publicRating String? // e.g. "JCR A+"
+  bankName     String?
+  bankAccount  String?
+  notes        String?
+
+  // Chain-of-title: for an INTERMEDIARY party, the primary right-holder it
+  // actually sources from (e.g. the mining IUP holder behind a transport
+  // permit-only supplier). Null unless role = INTERMEDIARY.
+  primaryRightHolderName String?
+  primaryRightHolderVerified Boolean @default(false)
+
+  createdAt DateTime @default(now())
+}
+
+model FinancingAsk {
+  id             String                 @id @default(cuid())
+  dealId         String
+  deal           Deal                   @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  structureType  FinancingStructureType @default(UNKNOWN)
+  amount         Float?
+  currency       String? // ISO 4217, e.g. "USD", "IDR"
+  advanceRatePct Float? // LTV-equivalent, where applicable
+  tenorDaysMin   Int?
+  tenorDaysMax   Int?
+  tenorNote      String? // e.g. "provisional — transit time not yet confirmed"
+  recurring      Boolean                @default(false)
+  recurringNote  String?
+  createdAt      DateTime               @default(now())
+}
+
+enum RiskFlagCategory {
+  CHAIN_OF_TITLE // licensed-resource intermediary chain not yet verified
+  CURRENCY_MISMATCH
+  QUANTITY_OR_TERM_MISMATCH // two contracts in the same deal don't reconcile
+  DOCUMENTARY_FRAUD_PATTERN // matches a known sector fraud shape (Hin Leong/
+  // Radiant World/Churchill Mining-style)
+  STALE_DEADLINE // a referenced financing teaser's own dates have passed
+  MISSING_DOCUMENT
+  OTHER
+}
+
+model RiskFlag {
+  id          String            @id @default(cuid())
+  dealId      String
+  deal        Deal              @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  category    RiskFlagCategory
+  severity    Int // 1 (low) - 5 (high) — used to sort the gap analysis / benchmark docs
+  description String
+  resolvedAt  DateTime?
+  createdAt   DateTime          @default(now())
+}
+
+model UploadedDocument {
+  id          String   @id @default(cuid())
+  dealId      String
+  deal        Deal     @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  fileName    String
+  blobUrl     String // Vercel Blob URL — see lib/blob.ts
+  mimeType    String
+  sizeBytes   Int
+  // What the extraction agent read out of THIS specific file, before merging
+  // into the deal-level Party/FinancingAsk/RiskFlag rows — kept for
+  // provenance/audit ("which document said what").
+  extractedFieldsRaw Json?
+  uploadedAt  DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Capital providers — the productionized providers.json. One shared table
+// across every org (a provider's terms aren't confidential), matches are
+// scoped per-deal.
+// ---------------------------------------------------------------------------
+
+enum ProviderType {
+  BANK
+  SPECIALIST_FACTOR
+  MARKETPLACE
+  ENTERPRISE_SCF_PLATFORM
+  TRADE_FINANCE_FUND
+}
+
+enum ProviderConfidence {
+  VERIFIED_SITE
+  VERIFIED_SECONDARY
+  UNVERIFIED_NEEDS_CHECK
+}
+
+model Provider {
+  id                          String               @id // stable slug, e.g. "incomlend" — ported directly from providers.json
+  name                        String
+  type                        ProviderType
+  product                     String
+  recourse                    String? // "recourse" | "non_recourse" | "both" | "not_applicable"
+  sellerJurisdictions         String[] // "any" is a literal member when unrestricted
+  obligorJurisdictions        String[]
+  currencies                  String[]
+  minTicketUsd                Float?
+  maxTicketUsd                Float?
+  typicalMinAnnualVolumeUsd   Float?
+  gatingFactor                String?
+  feeNotes                    String?
+  applicationProcess          String?
+  applicationUrl              String?
+  contact                     String?
+  timeToTermSheet             String?
+  confidence                  ProviderConfidence  @default(UNVERIFIED_NEEDS_CHECK)
+  lastVerified                DateTime?
+  sources                     String[]
+  notes                       String?
+  financingStructuresSupported FinancingStructureType[]
+  documentsRequired           ProviderDocumentRequirement[]
+  matches                     ProviderMatch[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Standard Document Taxonomy — see schema.md for the full, authoritative list
+// of codes (CORP_INCORP, DEAL_IUP_CHAIN, DEAL_LHV, etc.). Stored as a free
+// string here rather than a Prisma enum so a new code can be added by the
+// research agent without a schema migration.
+model ProviderDocumentRequirement {
+  id         String   @id @default(cuid())
+  providerId String
+  provider   Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  code       String
+  note       String?
+}
+
+enum MatchVerdict {
+  GOOD
+  POSSIBLE
+  POOR
+  EXCLUDED
+}
+
+model ProviderMatch {
+  id          String       @id @default(cuid())
+  dealId      String
+  deal        Deal         @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  providerId  String
+  provider    Provider     @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  verdict     MatchVerdict
+  rationale   String // freshly reasoned for THIS deal, never just copied from provider.notes
+  isTier1     Boolean      @default(false)
+  createdAt   DateTime     @default(now())
+
+  @@unique([dealId, providerId])
+}
+
+// One row per agent run — extraction, matching, or provider research. This is
+// what makes the "feedback to the AI agent in case more research is done"
+// loop auditable: you can see exactly why a second research pass fired.
+enum ResearchRunKind {
+  EXTRACTION
+  PROVIDER_MATCHING
+  PROVIDER_RESEARCH_REFRESH // capital-provider-research, Mode A
+  PROVIDER_RESEARCH_NEW // capital-provider-research, Mode B
+  LENDER_BENCHMARK
+}
+
+enum ResearchRunStatus {
+  RUNNING
+  SUCCEEDED
+  FAILED
+  NEEDS_HUMAN_INPUT // e.g. extraction couldn't determine transit time — deal
+  // moves to NEEDS_REVIEW instead of silently guessing
+}
+
+model ResearchRun {
+  id          String            @id @default(cuid())
+  dealId      String?
+  deal        Deal?             @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  kind        ResearchRunKind
+  status      ResearchRunStatus @default(RUNNING)
+  triggeredBy String // "user" | "system:low_confidence_match" | "system:stale_provider" | ...
+  inputSummary String?
+  outputSummary String?
+  startedAt   DateTime          @default(now())
+  finishedAt  DateTime?
+}
+
+// The lender-benchmark skill's output, productionized.
+model TermSheet {
+  id              String   @id @default(cuid())
+  dealId          String
+  deal            Deal     @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  proposedRatePct Float?
+  rateRationale   String?
+  advanceRatePct  Float?
+  tenorDaysMin    Int?
+  tenorDaysMax    Int?
+  tenorNote       String?
+  currency        String?
+  securityTerms   String?
+  conditionsPrecedent String?
+  benchmarkTableJson Json? // the alternative-provider comparison table
+  leverageAssessment String? // Step 3 of the skill: how much pricing power the lender has
+  createdAt       DateTime @default(now())
+}
