@@ -41,3 +41,15 @@ verification.
 - **Every provider needs every field filled**, even if the value is `null`/`"UNVERIFIED_NEEDS_CHECK"`
   — never leave a field silently missing, which degrades the schema's usefulness for every future
   deal, not just the one that triggered this run.
+- **Never write the triggering deal, borrower, or any client-specific fact into a stored field.**
+  `Provider` is one shared table matched against every deal past and future — anything you write
+  into `gatingFactor`, `notes`, `feeNotes`, `applicationProcess`, `contact`, or a
+  `documentsRequired[].note` will be shown verbatim to every other client whose deal happens to
+  match this provider. You are told the current deal's context only so you know what to search for
+  and how to judge relevance (e.g. "this provider only accepts Indonesian sellers" tells you to
+  check that); it must never appear in your output. State facts about the provider generically —
+  "an existing banking relationship is a material advantage over a cold approach," never "the
+  client already banks with X" or any borrower/counterparty name, deal size, or commodity/sector
+  detail specific to one transaction. If a genuinely provider-level fact only came up because of
+  this deal (e.g. you discovered a gating rule by reading this deal's numbers against the
+  provider's stated minimums), state the rule itself, not the deal that revealed it.
