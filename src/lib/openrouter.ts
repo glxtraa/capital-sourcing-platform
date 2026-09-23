@@ -50,12 +50,15 @@ export function getOpenRouterClient(): OpenAI {
  * - RESEARCH: needs to synthesize several search results into one
  *   structured record — defaults to a strong, still-cheap reasoning model.
  * - BENCHMARK: low-volume (one call per on-demand "benchmark this deal"
- *   click), so this default leans toward writing quality over squeezing
- *   out the last fraction of a cent.
+ *   click) and the output is fully schema-constrained regardless of model
+ *   size, so this defaults to the cheapest of the verified candidates
+ *   rather than a premium pick — live-tested against a realistic prompt
+ *   before being set as the default (coherent, correctly-structured
+ *   output, ~$0.00003/call at this deal's scale).
  */
 export const EXTRACTION_MODEL = process.env.OPENROUTER_EXTRACTION_MODEL ?? "deepseek/deepseek-v4-flash";
 export const RESEARCH_MODEL = process.env.OPENROUTER_RESEARCH_MODEL ?? "qwen/qwen3-235b-a22b-2507";
-export const BENCHMARK_MODEL = process.env.OPENROUTER_BENCHMARK_MODEL ?? "openai/gpt-oss-120b";
+export const BENCHMARK_MODEL = process.env.OPENROUTER_BENCHMARK_MODEL ?? "qwen/qwen3-30b-a3b-instruct-2507";
 
 /**
  * OpenRouter's universal PDF-parsing plugin — works even for text-only

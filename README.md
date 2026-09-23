@@ -88,7 +88,7 @@ re-verifying):
 |---|---|---|
 | Extraction | `deepseek/deepseek-v4-flash` | Highest-stakes task (filling a complex nested schema from real, sometimes OCR'd, bilingual contracts) — large context window (1M tokens) and strong general reasoning, still cheap (~$0.09/$0.18 per million tokens in/out at time of writing) |
 | Research | `qwen/qwen3-235b-a22b-2507` | Needs to synthesize several search results into one structured, honest (null-when-unknown) provider record — strong reasoning at a similar price point |
-| Benchmark | `openai/gpt-oss-120b` | Low-volume (one call per on-demand "benchmark this deal" click), so this leans toward writing quality (the rate-rationale text a lender actually reads) over squeezing out the last fraction of a cent |
+| Benchmark | `qwen/qwen3-30b-a3b-instruct-2507` | Output is fully schema-constrained regardless of model size, so this defaults to the cheapest verified candidate (~$0.05/$0.19 per million) rather than a premium pick — live-tested against a realistic prompt before being set as the default |
 
 All three are independently overridable via `OPENROUTER_EXTRACTION_MODEL` /
 `OPENROUTER_RESEARCH_MODEL` / `OPENROUTER_BENCHMARK_MODEL`. Whatever you pick needs to support
