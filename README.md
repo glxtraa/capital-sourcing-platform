@@ -150,7 +150,18 @@ confirming the app compiles before you've stood up infrastructure.
    automatically.
 4. **Inngest**: install the Inngest integration from the Vercel Marketplace, or create an app at
    inngest.com and set `INNGEST_EVENT_KEY`/`INNGEST_SIGNING_KEY` manually. Either way it needs to
-   know your deployed `/api/inngest` URL — the Vercel integration handles this for you.
+   know your deployed `/api/inngest` URL — the Vercel integration is *supposed* to handle this
+   for you automatically on every deploy, but the first sync doesn't always fire (e.g. if the
+   integration was connected before the app was fully working). Symptom: the Inngest
+   dashboard shows events received but 0 executions — your event was accepted into the queue but
+   no function is registered to run it. Fix it directly with one request (this is exactly what
+   Inngest's own "Sync" button does under the hood — a PUT tells your app to push its function
+   list to Inngest Cloud):
+   ```bash
+   curl -X PUT https://<your-deployed-domain>/api/inngest
+   ```
+   A `{"message":"Successfully registered","modified":true}` response means it's fixed —
+   already-queued events are typically redelivered once a matching function exists.
 5. Set `OPENROUTER_API_KEY` — one key for every model this app calls (Project → Settings →
    Environment Variables). Get it from [openrouter.ai/keys](https://openrouter.ai/keys).
 6. Run `npx prisma migrate deploy` against the production `DATABASE_URL` once (locally, with
