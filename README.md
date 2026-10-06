@@ -103,6 +103,39 @@ text-extraction library mangles. The plugin OCRs server-side (via `mistral-ocr` 
 hands the model real text regardless of whether that model has any native file/vision support —
 which none of this app's open-weight defaults do.
 
+## Provider research, discovery and exports
+
+Three pages sit on top of the provider database:
+
+- **/research — contact & application research.** For each provider, a batch job finds the official
+  contact channels (role mailboxes only), the application route and, for an online form, **every field
+  it asks for** — read directly from the page HTML (`src/lib/form-inspector.ts`), not guessed. Pages
+  that build their form with JavaScript are reported as "not visible" rather than invented. Contacts
+  survive only if they appear in the research text and sit on the provider's own domain; third-party
+  sources and LinkedIn are stripped, and everything removed is listed in the row's notes. Results are
+  **proposals** (`ProviderOnboarding`, `PENDING_REVIEW`); accepting one fills only *empty* Provider fields.
+- **/research?tab=candidates — new providers.** Discovery searches family offices / private lenders,
+  private credit and platforms, steered by the jurisdictions, currencies and structure types found in
+  your deals (never names or amounts). Each candidate's own website is fetched and checked; hedged
+  claims and possible duplicates are flagged. "Add to provider database" builds a full Provider record
+  and then researches its onboarding.
+- **/export — downloads.** Any table as CSV or JSON, everything as a `.zip`, and the provider table in
+  the `providers.json` layout the manual skills read. `npm run export:providers` does the same from the
+  command line and merges new providers into `providers.json` without overwriting existing entries.
+
+How batches run: a batch is a set of `ResearchTask`s; each `POST /api/research/batches/:id/step` does
+**one model call**, so every request fits Vercel Hobby's 60s cap. The Research page drives the loop
+(keep the tab open; "Resume unfinished batch" continues). Onboarding/discovery default to
+`qwen/qwen3-30b-a3b-instruct-2507` (measured 6-30s per step; the 235B research model took 70-80s per step
+and cannot fit Hobby) — override with `OPENROUTER_ONBOARDING_MODEL` / `OPENROUTER_PROFILE_MODEL`.
+
+**Scheduled research (off by default).** `vercel.json` registers a daily cron on `/api/cron/research`.
+It does nothing unless you tick "Scheduled research" on the Research page *and* set `CRON_SECRET` in
+Vercel (Vercel sends it as a bearer token; the route is excluded from the site-password proxy for that
+reason). Each run advances three tasks, or starts a new stale-provider sweep if the last one is over 6
+days old. On Hobby that is slow; use the button for a full sweep. After deploying, run
+`npx prisma migrate deploy` once for the new tables.
+
 ## Model choice
 
 `src/lib/openrouter.ts` picks a different default model per agent rather than one model for

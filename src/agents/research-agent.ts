@@ -37,14 +37,20 @@ export interface ProviderFindings {
  * returns as annotations can be fed back in explicitly for the structuring
  * step to cite properly in `sources`.
  */
+export interface CallOptions {
+  model?: string;
+  signal?: AbortSignal;
+}
+
 export async function researchProviderFindings(
   providerNameOrHint: string,
   dealContext: string,
+  opts: CallOptions = {},
 ): Promise<ProviderFindings> {
   const client = getOpenRouterClient();
 
   const researchParams: ChatCompletionCreateParamsNonStreaming & { plugins?: readonly unknown[] } = {
-    model: RESEARCH_MODEL,
+    model: opts.model ?? RESEARCH_MODEL,
     plugins: webSearchPlugin(8),
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
@@ -61,7 +67,7 @@ export async function researchProviderFindings(
     ],
   };
 
-  const researchResponse = await client.chat.completions.create(researchParams);
+  const researchResponse = await client.chat.completions.create(researchParams, { signal: opts.signal, maxRetries: opts.signal ? 0 : undefined });
   const findings = researchResponse.choices[0]?.message?.content;
   if (!findings) {
     throw new Error(`Research agent found nothing for "${providerNameOrHint}". Raw response: ${JSON.stringify(researchResponse)}`);
@@ -79,11 +85,13 @@ export async function researchProviderFindings(
 export async function structureProviderFindings(
   providerNameOrHint: string,
   { findings, citedUrls }: ProviderFindings,
+  opts: CallOptions = {},
 ): Promise<ProviderDTO> {
   const client = getOpenRouterClient();
 
-  const structureResponse = await client.chat.completions.create({
-    model: RESEARCH_MODEL,
+  const structureResponse = await client.chat.completions.create(
+    {
+    model: opts.model ?? RESEARCH_MODEL,
     response_format: RESPONSE_FORMAT,
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
@@ -101,7 +109,9 @@ export async function structureProviderFindings(
           `copying the name or deal-specific detail into any field.`,
       },
     ],
-  });
+    },
+    { signal: opts.signal, maxRetries: opts.signal ? 0 : undefined },
+  );
 
   const content = structureResponse.choices[0]?.message?.content;
   if (!content) {

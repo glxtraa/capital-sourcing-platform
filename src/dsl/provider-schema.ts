@@ -12,6 +12,8 @@ export const ProviderType = z.enum([
   "MARKETPLACE",
   "ENTERPRISE_SCF_PLATFORM",
   "TRADE_FINANCE_FUND",
+  "FAMILY_OFFICE",
+  "PRIVATE_CREDIT_FUND",
 ]);
 
 export const ProviderConfidence = z.enum([

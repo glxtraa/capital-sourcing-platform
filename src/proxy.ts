@@ -30,9 +30,10 @@ export const config = {
     /*
      * Everything EXCEPT:
      * - /api/site-auth: the login-check endpoint itself.
+     * - /api/cron: Vercel Cron calls, authenticated by CRON_SECRET in the route itself.
      * - /login: the password entry page itself.
      * - Next.js internals and common static assets.
      */
-    "/((?!api/site-auth|login|_next/static|_next/image|favicon.ico).*)",
+    "/((?!api/site-auth|api/cron|login|_next/static|_next/image|favicon.ico).*)",
   ],
 };

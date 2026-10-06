@@ -58,6 +58,10 @@ export function getOpenRouterClient(): OpenAI {
  */
 export const EXTRACTION_MODEL = process.env.OPENROUTER_EXTRACTION_MODEL ?? "deepseek/deepseek-v4-flash";
 export const RESEARCH_MODEL = process.env.OPENROUTER_RESEARCH_MODEL ?? "qwen/qwen3-235b-a22b-2507";
+// Batch research steps must each finish inside Vercel Hobby's 60s function cap. Measured on a live
+// provider: qwen3-235b took 69-82s per step; the 30B instruct model took 6-10s; deepseek-v4-flash 23-33s.
+export const ONBOARDING_MODEL = process.env.OPENROUTER_ONBOARDING_MODEL ?? "qwen/qwen3-30b-a3b-instruct-2507";
+export const PROFILE_MODEL = process.env.OPENROUTER_PROFILE_MODEL ?? "deepseek/deepseek-v4-flash";
 export const BENCHMARK_MODEL = process.env.OPENROUTER_BENCHMARK_MODEL ?? "qwen/qwen3-30b-a3b-instruct-2507";
 
 /**

@@ -169,6 +169,8 @@ enum ProviderType {
   MARKETPLACE
   ENTERPRISE_SCF_PLATFORM
   TRADE_FINANCE_FUND
+  FAMILY_OFFICE // private capital with a published deal-sourcing intake (found by discovery)
+  PRIVATE_CREDIT_FUND // non-bank direct lender / private credit manager
 }
 
 enum ProviderConfidence {
@@ -202,6 +204,7 @@ model Provider {
   financingStructuresSupported FinancingStructureType[]
   documentsRequired           ProviderDocumentRequirement[]
   matches                     ProviderMatch[]
+  onboardings                 ProviderOnboarding[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -289,4 +292,125 @@ model TermSheet {
   benchmarkTableJson Json? // the alternative-provider comparison table
   leverageAssessment String? // Step 3 of the skill: how much pricing power the lender has
   createdAt       DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Provider onboarding research + discovery of new providers (batch jobs).
+// Everything the research agents produce lands in these tables as a PROPOSAL
+// for a human to accept/reject -- nothing here overwrites a Provider row.
+// ---------------------------------------------------------------------------
+
+enum OnboardingStatus {
+  PENDING_REVIEW
+  ACCEPTED
+  REJECTED
+  SUPERSEDED // an older ACCEPTED row replaced by a newer accepted one
+}
+
+// How to contact a provider and what an application needs, from official
+// sources only. One row per research run (history is kept); the newest
+// ACCEPTED row per provider is the current answer.
+model ProviderOnboarding {
+  id         String   @id @default(cuid())
+  providerId String
+  provider   Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  taskId     String? // the ResearchTask that produced it
+
+  status OnboardingStatus @default(PENDING_REVIEW)
+
+  applicationRoute          String // ONLINE_FORM | EMAIL | RELATIONSHIP_MANAGER | BROKER | NONE_PUBLIC
+  applicationUrl            String?
+  accountRequiredBeforeForm Boolean?
+  formFieldsVisibility      String // FULL | PARTIAL | NOT_VISIBLE -- how much of the form the agent could actually see
+  contacts                  Json // [{channel, value, purpose, sourceUrl}] -- official channels only, verified against the findings text
+  formFields                Json // [{label, required, step, note}] -- the data a form asks for, so it can be gathered beforehand
+  documentsToPrepare        Json // [{code, note}] using the Standard Document Taxonomy
+  steps                     String[]
+  eligibilityChecks         String[]
+  typicalTurnaround         String?
+  confidence                ProviderConfidence
+  sources                   String[]
+  notes                     String?
+
+  researchedAt DateTime  @default(now())
+  reviewedAt   DateTime?
+
+  @@index([providerId, status])
+}
+
+enum CandidateStatus {
+  PENDING_REVIEW
+  PROMOTED
+  REJECTED
+}
+
+// A provider the discovery agent found that is not yet in the Provider table.
+model ProviderCandidate {
+  id                 String          @id @default(cuid())
+  name               String
+  normalizedName     String          @unique // lowercase alphanumerics only -- dedupe key
+  websiteUrl         String?
+  domain             String?
+  suggestedType      String // a ProviderType name; free text until promoted
+  description        String
+  whySurfaced        String
+  jurisdictionsHint  String[]
+  sources            String[]
+  status             CandidateStatus @default(PENDING_REVIEW)
+  promotedProviderId String?
+  taskId             String?
+  discoveredAt       DateTime        @default(now())
+}
+
+enum ResearchTaskKind {
+  ONBOARDING // contact + application research for one existing provider
+  DISCOVERY // look for new providers of one category
+  PROFILE // build a full Provider record for a promoted candidate
+}
+
+enum ResearchTaskStatus {
+  QUEUED // nothing done yet
+  SEARCHED // web-search step done (findings stored); structuring step pending
+  DONE
+  FAILED
+}
+
+model ResearchBatch {
+  id          String         @id @default(cuid())
+  label       String
+  triggeredBy String // "user" | "cron"
+  createdAt   DateTime       @default(now())
+  finishedAt  DateTime?
+  tasks       ResearchTask[]
+}
+
+// One unit of batch work. Each step() call performs ONE model call (search or
+// structure) so every request fits Vercel Hobby's 60s function cap.
+model ResearchTask {
+  id         String             @id @default(cuid())
+  batchId    String
+  batch      ResearchBatch      @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  kind       ResearchTaskKind
+  status     ResearchTaskStatus @default(QUEUED)
+  providerId String? // ONBOARDING
+  candidateId String? // PROFILE
+  subject    String // human label: provider name or discovery category
+  payload    Json? // DISCOVERY: {category, context}
+  findings   String? // search-step output, kept between the two steps
+  citedUrls  String[]
+  attempts   Int                @default(0)
+  lockedAt   DateTime? // set while a step runs; stale after 90s
+  error      String?
+  resultSummary String?
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
+
+  @@index([batchId, status])
+}
+
+// Tiny key/value store for app switches (e.g. "cronEnabled").
+model AppSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
 }

@@ -24,6 +24,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <Link href="/providers" className="hover:text-neutral-900 dark:hover:text-neutral-100">
                 Providers
               </Link>
+              <Link href="/research" className="hover:text-neutral-900 dark:hover:text-neutral-100">
+                Research
+              </Link>
+              <Link href="/export" className="hover:text-neutral-900 dark:hover:text-neutral-100">
+                Export
+              </Link>
             </nav>
           </div>
         </header>
