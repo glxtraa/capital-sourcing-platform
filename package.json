@@ -10,7 +10,8 @@
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
     "db:studio": "prisma studio",
-    "seed:providers": "tsx scripts/import-legacy-providers.ts"
+    "seed:providers": "tsx scripts/import-legacy-providers.ts",
+    "export:providers": "tsx scripts/export-providers.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
