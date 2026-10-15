@@ -22,7 +22,12 @@ export default async function VcDealDetailPage({
       financingAsks: true,
       riskFlags: { orderBy: { severity: "desc" } },
       competitors: { orderBy: { createdAt: "asc" } },
-      commercialProspects: { orderBy: { createdAt: "asc" } },
+      commercialProspects: {
+        include: {
+          contacts: { orderBy: { createdAt: "asc" } },
+        },
+        orderBy: { createdAt: "asc" },
+      },
       matches: {
         include: {
           investor: {

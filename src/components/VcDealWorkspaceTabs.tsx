@@ -82,6 +82,22 @@ interface VcDealWorkspaceTabsProps {
       sourceVerified: boolean;
       sourceHttpStatus: number | null;
       lastVerified: Date | string | null;
+      contacts?: Array<{
+        id: string;
+        fullName: string;
+        title: string;
+        roleCategory: string;
+        department: string | null;
+        linkedinUrl: string | null;
+        emailPattern: string | null;
+        location: string | null;
+        relevanceRationale: string | null;
+        outreachAngle: string | null;
+        sourceUrl: string | null;
+        sourceVerified: boolean;
+        sourceHttpStatus: number | null;
+        lastVerified: Date | string | null;
+      }>;
     }>;
 
     documents: Array<{
@@ -692,8 +708,57 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
     }
   }
 
+  const [isDiscoveringContacts, setIsDiscoveringContacts] = useState(false);
+  const [discoveringProspectContactId, setDiscoveringProspectContactId] = useState<string | null>(null);
+  const [contactNotice, setContactNotice] = useState<string | null>(null);
+
+  async function handleDiscoverContacts(targetProspectId?: string) {
+    if (targetProspectId) {
+      setDiscoveringProspectContactId(targetProspectId);
+    } else {
+      setIsDiscoveringContacts(true);
+    }
+    setContactNotice(null);
+
+    try {
+      const res = await fetch(`/api/vc-deals/${deal.id}/commercial/contacts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prospectId: targetProspectId || undefined,
+        }),
+      });
+
+      let data: any = null;
+      const contentType = res.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        data = await res.json();
+      } else {
+        const text = await res.text();
+        throw new Error(text || `Server returned HTTP ${res.status}`);
+      }
+
+      if (!res.ok) {
+        throw new Error(data?.error || `Failed to discover contacts (${res.status})`);
+      }
+
+      setContactNotice(data.auditSummary || "Executive contact discovery complete!");
+      setTimeout(() => setContactNotice(null), 6000);
+      router.refresh();
+    } catch (err: any) {
+      setContactNotice(err instanceof Error ? err.message : "Error discovering executive contacts");
+    } finally {
+      setIsDiscoveringContacts(false);
+      setDiscoveringProspectContactId(null);
+    }
+  }
+
   // Commercial Prospects partitioning
   const allCommercialProspects = deal.commercialProspects || [];
+  const totalContactsCount = allCommercialProspects.reduce(
+    (acc, p) => acc + (p.contacts?.length || 0),
+    0,
+  );
   const clientProspects = allCommercialProspects.filter(
     (p) =>
       p.category === "ENTERPRISE_CUSTOMER" ||
@@ -806,6 +871,41 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
       hasExtraction: Boolean(d.extractedRaw),
     })),
     reconciledSpec: deal.dealSpecJson || null,
+  };
+
+  // Contact Discovery Agent DSL Payload
+  const contactMissingParams: MissingParameterInfo[] = [];
+  if (!deal.targetCustomerProfile || deal.targetCustomerProfile.trim().length === 0) {
+    contactMissingParams.push({
+      name: "targetCustomerProfile",
+      description: "Target Customer Profile / ICP is empty",
+      suggestedFix: "Specify target buyer personas and corporate account types to focus contact research",
+    });
+  }
+  if (!deal.industry || deal.industry.trim().length === 0) {
+    contactMissingParams.push({
+      name: "industry",
+      description: "Industry domain is empty",
+      suggestedFix: "Provide niche domain so outreach angles cite relevant regulatory frameworks and standards",
+    });
+  }
+
+  const contactDslPayload = {
+    agentFlow: "PERSONA_CONTACT_DISCOVERY_AND_OUTREACH_V2",
+    companyName: deal.companyName,
+    stage: deal.stage,
+    primaryVertical: deal.primaryVertical,
+    industry: deal.industry || null,
+    subIndustries: deal.subIndustries || [],
+    targetCustomerProfile: deal.targetCustomerProfile || null,
+    businessModel: deal.businessModel || null,
+    jurisdiction: deal.legalEntityJurisdiction,
+    targetedPersonas: allCommercialProspects.map((p) => ({
+      account: p.name,
+      category: p.category,
+      buyerPersona: p.buyerPersona,
+      existingContacts: (p.contacts || []).map((c) => `${c.fullName} — ${c.title}`),
+    })),
   };
 
 
@@ -2541,6 +2641,43 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                   <Badge tone={allCommercialProspects.length > 0 ? "green" : "neutral"}>
                     {clientProspects.length} Clients · {partnerProspects.length} Partners
                   </Badge>
+                  {totalContactsCount > 0 && (
+                    <Badge tone="blue">
+                      {totalContactsCount} Contacts Mapped
+                    </Badge>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={isDiscoveringContacts || allCommercialProspects.length === 0}
+                    onClick={() => handleDiscoverContacts()}
+                    className="gap-1.5 text-xs text-blue-700 hover:text-blue-800 border-blue-300 dark:border-blue-800 dark:text-blue-300"
+                  >
+                    {isDiscoveringContacts ? (
+                      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <UserCheck className="h-3.5 w-3.5" />
+                    )}
+                    {isDiscoveringContacts ? "Finding Contacts..." : "Find Contacts for Personas"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      setActiveDslModal({
+                        agentName: "Executive Persona & Decision-Maker Contact Agent",
+                        agentFlow: "PERSONA_CONTACT_DISCOVERY_AND_OUTREACH_V2",
+                        description:
+                          "Discovers real current executive decision makers and department heads matching the target buyer persona at each prospective client account.",
+                        dslInput: contactDslPayload,
+                        missingParameters: contactMissingParams,
+                      })
+                    }
+                    className="gap-1.5 text-xs text-blue-700 hover:text-blue-900 border-blue-200 dark:border-blue-900/60 dark:text-blue-300"
+                  >
+                    <FileCode className="h-3.5 w-3.5 text-blue-600" />
+                    Inspect Contact DSL
+                  </Button>
                   <Button
                     size="sm"
                     variant="outline"
@@ -2557,7 +2694,7 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                     className="gap-1.5 text-xs text-neutral-700 hover:text-neutral-900 border-neutral-300 dark:border-neutral-700 dark:text-neutral-300"
                   >
                     <FileCode className="h-3.5 w-3.5 text-emerald-600" />
-                    Inspect Agent DSL Input
+                    Inspect Market DSL
                   </Button>
                   <Button
                     size="sm"
@@ -2571,13 +2708,19 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                     ) : (
                       <Search className="h-3.5 w-3.5" />
                     )}
-                    {isDiscoveringCommercial ? "Discovering Prospects..." : "Discover / Re-run Commercial Intelligence"}
+                    {isDiscoveringCommercial ? "Discovering Prospects..." : "Discover / Re-run Prospects"}
                   </Button>
                 </div>
               </div>
               {commercialNotice && (
                 <div className="mt-2 text-xs text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40 p-2 rounded">
                   {commercialNotice}
+                </div>
+              )}
+              {contactNotice && (
+                <div className="mt-2 text-xs text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/40 p-2 rounded flex items-center justify-between">
+                  <span>{contactNotice}</span>
+                  <button onClick={() => setContactNotice(null)} className="text-blue-500 hover:text-blue-700 text-xs">✕</button>
                 </div>
               )}
             </CardHeader>
@@ -2833,6 +2976,122 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                           </div>
                         )}
                       </div>
+
+                      {/* Persona Executive Contacts Section */}
+                      {prospect.contacts && prospect.contacts.length > 0 ? (
+                        <div className="space-y-2 pt-2 border-t border-neutral-100 dark:border-neutral-800">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] font-semibold uppercase tracking-wider text-blue-700 dark:text-blue-400 flex items-center gap-1.5">
+                              <UserCheck className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" />
+                              Key Persona Contacts ({prospect.contacts.length})
+                            </span>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={discoveringProspectContactId === prospect.id}
+                              onClick={() => handleDiscoverContacts(prospect.id)}
+                              className="h-5 text-[10px] px-1.5 gap-1 text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200"
+                            >
+                              {discoveringProspectContactId === prospect.id ? (
+                                <RefreshCw className="h-2.5 w-2.5 animate-spin" />
+                              ) : (
+                                <RefreshCw className="h-2.5 w-2.5" />
+                              )}
+                              Refresh
+                            </Button>
+                          </div>
+
+                          <div className="space-y-2">
+                            {prospect.contacts.map((contact) => (
+                              <div
+                                key={contact.id}
+                                className="rounded-md border border-blue-100/90 bg-blue-50/40 p-2.5 dark:border-blue-900/40 dark:bg-blue-950/20 text-xs space-y-2"
+                              >
+                                <div className="flex items-start justify-between gap-2">
+                                  <div>
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="font-semibold text-neutral-900 dark:text-neutral-100 text-xs">
+                                        {contact.fullName}
+                                      </span>
+                                      {contact.linkedinUrl && (
+                                        <a
+                                          href={contact.linkedinUrl}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          className="text-blue-600 hover:text-blue-800 transition-colors"
+                                          title="View Profile"
+                                        >
+                                          <ExternalLink className="h-3 w-3" />
+                                        </a>
+                                      )}
+                                    </div>
+                                    <span className="text-[11px] text-neutral-600 dark:text-neutral-400 block font-medium">
+                                      {contact.title}
+                                      {contact.department ? ` · ${contact.department}` : ""}
+                                    </span>
+                                  </div>
+
+                                  <Badge
+                                    tone={
+                                      contact.roleCategory === "DECISION_MAKER"
+                                        ? "purple"
+                                        : contact.roleCategory === "PROCUREMENT_LEAD"
+                                        ? "green"
+                                        : "blue"
+                                    }
+                                    className="text-[9px] px-1.5 py-0 uppercase shrink-0"
+                                  >
+                                    {contact.roleCategory.replaceAll("_", " ")}
+                                  </Badge>
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-2 text-[10px] text-neutral-500">
+                                  {contact.location && (
+                                    <span className="flex items-center gap-0.5">
+                                      <MapPin className="h-2.5 w-2.5 text-neutral-400 shrink-0" />
+                                      {contact.location}
+                                    </span>
+                                  )}
+                                  {contact.emailPattern && (
+                                    <span className="font-mono text-neutral-600 dark:text-neutral-300 bg-white/70 dark:bg-neutral-900/60 px-1.5 py-0.5 rounded border border-neutral-200 dark:border-neutral-700">
+                                      {contact.emailPattern}
+                                    </span>
+                                  )}
+                                </div>
+
+                                {contact.outreachAngle && (
+                                  <div className="p-2 rounded bg-white/90 dark:bg-neutral-900/80 border border-blue-200/50 dark:border-blue-900/30 text-[11px] text-neutral-700 dark:text-neutral-300">
+                                    <span className="font-semibold text-blue-800 dark:text-blue-300 block mb-0.5">
+                                      Personalized Outreach Hook:
+                                    </span>
+                                    <p className="italic leading-relaxed">{contact.outreachAngle}</p>
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="pt-2 border-t border-neutral-100 dark:border-neutral-800 flex items-center justify-between text-xs">
+                          <span className="text-[11px] text-neutral-400 italic">
+                            No contact mapped yet for {prospect.buyerPersona || "this persona"}
+                          </span>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={discoveringProspectContactId === prospect.id}
+                            onClick={() => handleDiscoverContacts(prospect.id)}
+                            className="h-6 text-[11px] gap-1 border-blue-200 text-blue-700 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-950/40"
+                          >
+                            {discoveringProspectContactId === prospect.id ? (
+                              <RefreshCw className="h-3 w-3 animate-spin" />
+                            ) : (
+                              <UserCheck className="h-3 w-3" />
+                            )}
+                            Find Contact
+                          </Button>
+                        </div>
+                      )}
 
                       <div className="pt-1 text-[10px] text-neutral-400 flex flex-wrap items-center justify-between gap-1">
                         <div className="flex items-center gap-1.5 truncate max-w-[70%]">

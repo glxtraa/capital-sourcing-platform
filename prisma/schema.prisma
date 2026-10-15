@@ -713,10 +713,34 @@ model StartupCommercialProspect {
   sourceVerified            Boolean      @default(false)
   sourceHttpStatus          Int?
   lastVerified              DateTime?
+  contacts                  StartupProspectContact[]
   createdAt                 DateTime     @default(now())
   updatedAt                 DateTime     @updatedAt
 
   @@index([dealId])
+}
+
+model StartupProspectContact {
+  id                        String       @id @default(cuid())
+  prospectId                String
+  prospect                  StartupCommercialProspect @relation(fields: [prospectId], references: [id], onDelete: Cascade)
+  fullName                  String
+  title                     String
+  roleCategory              String       @default("DECISION_MAKER") // DECISION_MAKER | PROCUREMENT_LEAD | TECHNICAL_EVALUATOR | CHAMPION
+  department                String?
+  linkedinUrl               String?
+  emailPattern              String?
+  location                  String?
+  relevanceRationale        String?
+  outreachAngle             String?
+  sourceUrl                 String?
+  sourceVerified            Boolean      @default(false)
+  sourceHttpStatus          Int?
+  lastVerified              DateTime?
+  createdAt                 DateTime     @default(now())
+  updatedAt                 DateTime     @updatedAt
+
+  @@index([prospectId])
 }
 
 model StartupCompetitor {

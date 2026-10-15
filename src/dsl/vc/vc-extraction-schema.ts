@@ -135,6 +135,30 @@ export const CommercialProspectCategorySchema = z.enum([
 ]);
 export type CommercialProspectCategory = z.infer<typeof CommercialProspectCategorySchema>;
 
+export const ContactRoleCategorySchema = z.enum([
+  "DECISION_MAKER",
+  "PROCUREMENT_LEAD",
+  "TECHNICAL_EVALUATOR",
+  "CHAMPION",
+]);
+export type ContactRoleCategory = z.infer<typeof ContactRoleCategorySchema>;
+
+export const StartupProspectContactSchema = z.object({
+  fullName: z.string().describe("Real executive or leader name matching the target buyer persona"),
+  title: z.string().describe("Exact executive title at the organization"),
+  roleCategory: ContactRoleCategorySchema.default("DECISION_MAKER"),
+  department: z.string().nullable().optional().describe("Department or division name"),
+  linkedinUrl: z.string().nullable().optional().describe("LinkedIn profile URL"),
+  emailPattern: z.string().nullable().optional().describe("Corporate email pattern or direct route"),
+  location: z.string().nullable().optional().describe("City, State, or Country"),
+  relevanceRationale: z.string().describe("Why this executive is the key decision maker for this offering"),
+  outreachAngle: z.string().describe("Specific personalized hook/icebreaker citing company mandates and value fit"),
+  sourceUrl: z.string().nullable().optional(),
+  sourceVerified: z.boolean().default(false),
+  sourceHttpStatus: z.number().int().nullable().optional(),
+});
+export type StartupProspectContact = z.infer<typeof StartupProspectContactSchema>;
+
 export const StartupCommercialProspectSchema = z.object({
   name: z.string(),
   websiteUrl: z.string().nullable().optional(),
@@ -146,6 +170,7 @@ export const StartupCommercialProspectSchema = z.object({
   sourceUrl: z.string().nullable().optional(),
   sourceVerified: z.boolean().default(false),
   sourceHttpStatus: z.number().int().nullable().optional(),
+  contacts: z.array(StartupProspectContactSchema).optional(),
 });
 export type StartupCommercialProspect = z.infer<typeof StartupCommercialProspectSchema>;
 
