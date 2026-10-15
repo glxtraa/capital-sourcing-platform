@@ -20,26 +20,75 @@ export async function GET(
 
   const deal = await db.startupDeal.findUnique({
     where: { id: dealId },
-    select: { industry: true, subIndustries: true, targetCustomerProfile: true, businessModel: true },
+    select: {
+      companyName: true,
+      stage: true,
+      primaryVertical: true,
+      industry: true,
+      subIndustries: true,
+      targetCustomerProfile: true,
+      businessModel: true,
+      legalEntityJurisdiction: true,
+      competitors: { select: { name: true, differentiation: true } },
+    },
   });
+
+  const dslInput = {
+    companyName: deal?.companyName ?? "",
+    stage: deal?.stage ?? "SEED",
+    primaryVertical: deal?.primaryVertical ?? "B2B_SAAS",
+    industry: deal?.industry ?? "",
+    subIndustries: deal?.subIndustries ?? [],
+    targetCustomerProfile: deal?.targetCustomerProfile ?? "",
+    businessModel: deal?.businessModel ?? "",
+    jurisdiction: deal?.legalEntityJurisdiction ?? "Delaware (US)",
+    competitorsHint: (deal?.competitors || []).map((c) => c.name),
+  };
+
+  const clients = prospects.filter(
+    (p) =>
+      p.category === "ENTERPRISE_CUSTOMER" ||
+      p.category === "MIDMARKET_CUSTOMER" ||
+      p.category === "INSTITUTIONAL_BUYER" ||
+      p.category === "SMB_CUSTOMER_SEGMENT",
+  );
+
+  const strategicPartners = prospects.filter(
+    (p) =>
+      p.category === "STRATEGIC_CHANNEL_PARTNER" ||
+      p.category === "INTEGRATION_ALLIANCE" ||
+      p.category === "REGULATORY_REGISTRY_PARTNER" ||
+      p.category === "DATA_OR_SUPPLY_PARTNER",
+  );
 
   return NextResponse.json({
     dealId,
+    dslInput,
     industry: deal?.industry ?? null,
     subIndustries: deal?.subIndustries ?? [],
     targetCustomerProfile: deal?.targetCustomerProfile ?? null,
     businessModel: deal?.businessModel ?? null,
+    clients,
+    strategicPartners,
     prospects,
   });
 }
 
 export async function POST(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ dealId: string }> },
 ) {
   const { dealId } = await params;
 
-  const deal = await db.startupDeal.findUnique({
+  const body = await req.json().catch(() => ({}));
+  const {
+    industry: overrideIndustry,
+    subIndustries: overrideSubIndustries,
+    targetCustomerProfile: overrideTargetCustomerProfile,
+    businessModel: overrideBusinessModel,
+  } = body || {};
+
+  let deal = await db.startupDeal.findUnique({
     where: { id: dealId },
     include: {
       documents: true,
@@ -53,6 +102,31 @@ export async function POST(
     return NextResponse.json({ error: "Startup deal not found" }, { status: 404 });
   }
 
+  // 1. If overrides were provided, persist them to the deal
+  const hasUpdates =
+    overrideIndustry !== undefined ||
+    overrideSubIndustries !== undefined ||
+    overrideTargetCustomerProfile !== undefined ||
+    overrideBusinessModel !== undefined;
+
+  if (hasUpdates) {
+    deal = await db.startupDeal.update({
+      where: { id: dealId },
+      data: {
+        ...(typeof overrideIndustry === "string" ? { industry: overrideIndustry } : {}),
+        ...(Array.isArray(overrideSubIndustries) ? { subIndustries: overrideSubIndustries } : {}),
+        ...(typeof overrideTargetCustomerProfile === "string" ? { targetCustomerProfile: overrideTargetCustomerProfile } : {}),
+        ...(typeof overrideBusinessModel === "string" ? { businessModel: overrideBusinessModel } : {}),
+      },
+      include: {
+        documents: true,
+        financingAsks: true,
+        competitors: true,
+        commercialProspects: true,
+      },
+    });
+  }
+
   try {
     const ask = deal.financingAsks[0];
     const targetRaise = ask?.targetRaiseUsd ? `$${ask.targetRaiseUsd.toLocaleString()}` : "early-stage venture capital";
@@ -60,18 +134,28 @@ export async function POST(
     const summaryContext =
       `${deal.companyName} is raising ${targetRaise} on ${ask?.instrumentType ?? "POST_MONEY_SAFE"}. ` +
       `Data room files: ${deal.documents.map((d) => d.fileName).join(", ") || "Deck and model"}. ` +
-      `Target Customer Profile: ${deal.targetCustomerProfile || "B2B Mid-Market / Enterprise"}. ` +
-      `Business Model: ${deal.businessModel || "Subscription SaaS / Platform"}.`;
+      (deal.targetCustomerProfile ? `Target ICP: ${deal.targetCustomerProfile}. ` : "") +
+      (deal.businessModel ? `Business Model: ${deal.businessModel}. ` : "");
+
+    const competitorNames = deal.competitors.map((c) => c.name);
+    const diffs = deal.competitors
+      .map((c) => c.differentiation)
+      .filter(Boolean)
+      .slice(0, 2)
+      .join("; ");
 
     const result = await researchStartupCommercialProspects({
       companyName: deal.companyName,
       stage: deal.stage,
       primaryVertical: deal.primaryVertical,
       industryHint: deal.industry || undefined,
+      subIndustries: deal.subIndustries,
       descriptionOrDeckSummary: summaryContext,
       targetCustomerProfile: deal.targetCustomerProfile || undefined,
       businessModel: deal.businessModel || undefined,
       jurisdiction: deal.legalEntityJurisdiction,
+      competitorsHint: competitorNames.length > 0 ? competitorNames : undefined,
+      differentiationHint: diffs || undefined,
     });
 
     await db.$transaction(async (tx) => {
@@ -109,7 +193,6 @@ export async function POST(
         const reconciliation = reconcileStartupExtractions(deal.id, deal.companyName, extractions);
         const spec = reconciliation.startupDealSpec;
         if (spec) {
-          // Overlay discovered commercial prospects & competitors
           spec.commercialProspects = result.prospects.map((p) => ({
             name: p.name,
             websiteUrl: p.websiteUrl,
@@ -178,6 +261,9 @@ export async function POST(
 
     return NextResponse.json({
       ok: true,
+      dslInput: result.dslInput,
+      clients: result.clients,
+      strategicPartners: result.strategicPartners,
       prospects: result.prospects,
       verifiedLinks: result.verifiedLinks,
       auditSummary: result.auditSummary,

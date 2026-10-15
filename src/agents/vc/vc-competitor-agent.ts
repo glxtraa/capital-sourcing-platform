@@ -27,6 +27,14 @@ const RESPONSE_FORMAT = zodToResponseFormat(
 );
 
 export interface CompetitorResearchResult {
+  dslInput?: {
+    companyName: string;
+    stage?: string;
+    primaryVertical: string;
+    industryHint?: string;
+    descriptionOrDeckSummary?: string;
+    jurisdiction?: string;
+  };
   industry: string;
   subIndustries: string[];
   competitors: (StartupCompetitorExtraction & { linkVerification?: VerifiedSourceLink })[];
@@ -295,7 +303,17 @@ export async function researchStartupCompetitors(params: {
     `Identified ${verifiedCompetitors.length} competitors (${directCount} direct rivals). ` +
     `Tested ${verifiedLinks.length} source links (${verifiedLinksCount} HTTP verified reachable).`;
 
+  const dslInput = {
+    companyName: params.companyName,
+    stage: params.stage,
+    primaryVertical: params.primaryVertical,
+    industryHint: params.industryHint,
+    descriptionOrDeckSummary: params.descriptionOrDeckSummary,
+    jurisdiction: params.jurisdiction,
+  };
+
   return {
+    dslInput,
     industry: structured.industrySummary,
     subIndustries: structured.subIndustries,
     competitors: verifiedCompetitors,

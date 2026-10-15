@@ -41,6 +41,7 @@ import { EditVcInvestorModal } from "@/components/EditVcInvestorModal";
 import { EditCapTableModal, SafeHolderData, CommonHolderData } from "@/components/EditCapTableModal";
 import { CachedPageModal } from "@/components/research/CachedPageModal";
 import { VcFunderDealResearchCard } from "@/components/VcFunderDealResearchCard";
+import { AgentDslModal, MissingParameterInfo } from "@/components/AgentDslModal";
 
 interface VcDealWorkspaceTabsProps {
   deal: {
@@ -50,8 +51,11 @@ interface VcDealWorkspaceTabsProps {
     primaryVertical: string;
     industry?: string | null;
     subIndustries?: string[];
+    targetCustomerProfile?: string | null;
+    businessModel?: string | null;
     legalEntityJurisdiction: string;
     status: string;
+    dealSpecJson?: any;
     competitors?: Array<{
       id: string;
       name: string;
@@ -629,6 +633,15 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
     }
   }
 
+  const [commercialSubTab, setCommercialSubTab] = useState<"clients" | "partners" | "all">("clients");
+  const [activeDslModal, setActiveDslModal] = useState<{
+    agentName: string;
+    agentFlow: string;
+    description: string;
+    dslInput: any;
+    missingParameters?: MissingParameterInfo[];
+  } | null>(null);
+
   const [isDiscoveringCommercial, setIsDiscoveringCommercial] = useState(false);
   const [commercialNotice, setCommercialNotice] = useState<string | null>(null);
 
@@ -639,6 +652,12 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
       const res = await fetch(`/api/vc-deals/${deal.id}/commercial`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          industry: deal.industry,
+          subIndustries: deal.subIndustries,
+          targetCustomerProfile: deal.targetCustomerProfile,
+          businessModel: deal.businessModel,
+        }),
       });
 
       let data: any = null;
@@ -672,6 +691,122 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
       setIsDiscoveringCommercial(false);
     }
   }
+
+  // Commercial Prospects partitioning
+  const allCommercialProspects = deal.commercialProspects || [];
+  const clientProspects = allCommercialProspects.filter(
+    (p) =>
+      p.category === "ENTERPRISE_CUSTOMER" ||
+      p.category === "MIDMARKET_CUSTOMER" ||
+      p.category === "INSTITUTIONAL_BUYER" ||
+      p.category === "SMB_CUSTOMER_SEGMENT",
+  );
+  const partnerProspects = allCommercialProspects.filter(
+    (p) =>
+      p.category === "STRATEGIC_CHANNEL_PARTNER" ||
+      p.category === "INTEGRATION_ALLIANCE" ||
+      p.category === "REGULATORY_REGISTRY_PARTNER" ||
+      p.category === "DATA_OR_SUPPLY_PARTNER" ||
+      (!["ENTERPRISE_CUSTOMER", "MIDMARKET_CUSTOMER", "INSTITUTIONAL_BUYER", "SMB_CUSTOMER_SEGMENT"].includes(p.category)),
+  );
+
+  const visibleCommercialProspects =
+    commercialSubTab === "clients"
+      ? clientProspects
+      : commercialSubTab === "partners"
+      ? partnerProspects
+      : allCommercialProspects;
+
+  // Commercial DSL Input & Missing Parameters tracking
+  const commercialMissingParams: MissingParameterInfo[] = [];
+  if (!deal.industry || deal.industry.trim().length === 0) {
+    commercialMissingParams.push({
+      name: "industry",
+      description: "Specific Industry / Market Domain is empty",
+      suggestedFix: "Set specific domain description (e.g. 'Volumetric Water Benefit Accounting & Blockchain ESG Water Replenishment Registry')",
+    });
+  }
+  if (!deal.targetCustomerProfile || deal.targetCustomerProfile.trim().length === 0) {
+    commercialMissingParams.push({
+      name: "targetCustomerProfile",
+      description: "Ideal Customer Profile (ICP) is empty",
+      suggestedFix: "Specify target corporate buyers (e.g. 'Fortune 500 beverage and food manufacturing corporations with water replenishment goals')",
+    });
+  }
+  if (!deal.businessModel || deal.businessModel.trim().length === 0) {
+    commercialMissingParams.push({
+      name: "businessModel",
+      description: "Business & Monetization Model is empty",
+      suggestedFix: "Specify revenue model (e.g. 'Volume issuance fee per megaliter + annual corporate SaaS audit fee')",
+    });
+  }
+  if (!deal.subIndustries || deal.subIndustries.length === 0) {
+    commercialMissingParams.push({
+      name: "subIndustries",
+      description: "Sub-industry tags are empty",
+      suggestedFix: "Add 2-4 granular tags (e.g. 'Water Stewardship, ESG Data, Replenishment Credits')",
+    });
+  }
+
+  const commercialDslPayload = {
+    agentFlow: "COMMERCIAL_CLIENTS_AND_PARTNERS_V2",
+    companyName: deal.companyName,
+    stage: deal.stage,
+    primaryVertical: deal.primaryVertical,
+    industry: deal.industry || null,
+    subIndustries: deal.subIndustries || [],
+    targetCustomerProfile: deal.targetCustomerProfile || null,
+    businessModel: deal.businessModel || null,
+    jurisdiction: deal.legalEntityJurisdiction,
+    existingCompetitors: (deal.competitors || []).map((c) => c.name),
+  };
+
+  // Competitor DSL Input & Missing Parameters tracking
+  const competitorMissingParams: MissingParameterInfo[] = [];
+  if (!deal.industry || deal.industry.trim().length === 0) {
+    competitorMissingParams.push({
+      name: "industry",
+      description: "Specific Industry / Market Domain is empty",
+      suggestedFix: "Provide niche industry description so competitor research targets exact peers instead of high-level category",
+    });
+  }
+  if (!deal.subIndustries || deal.subIndustries.length === 0) {
+    competitorMissingParams.push({
+      name: "subIndustries",
+      description: "Sub-industry tags are empty",
+      suggestedFix: "Add 2-4 granular tags to focus competitor search queries",
+    });
+  }
+
+  const competitorDslPayload = {
+    agentFlow: "COMPETITOR_INTELLIGENCE_AND_ANTI_PORTFOLIO_V2",
+    companyName: deal.companyName,
+    stage: deal.stage,
+    primaryVertical: deal.primaryVertical,
+    industry: deal.industry || null,
+    subIndustries: deal.subIndustries || [],
+    jurisdiction: deal.legalEntityJurisdiction,
+  };
+
+  // Deal Spec DSL Input
+  const specDslPayload = {
+    agentFlow: "DEAL_SPEC_EXTRACTION_AND_RECONCILIATION_V2",
+    companyName: deal.companyName,
+    stage: deal.stage,
+    primaryVertical: deal.primaryVertical,
+    industry: deal.industry || null,
+    subIndustries: deal.subIndustries || [],
+    targetCustomerProfile: deal.targetCustomerProfile || null,
+    businessModel: deal.businessModel || null,
+    jurisdiction: deal.legalEntityJurisdiction,
+    documentsCount: deal.documents?.length || 0,
+    documents: (deal.documents || []).map((d) => ({
+      fileName: d.fileName,
+      documentTypes: d.documentTypes,
+      hasExtraction: Boolean(d.extractedRaw),
+    })),
+    reconciledSpec: deal.dealSpecJson || null,
+  };
 
 
   const totalPct = leadPct + syndicatePct + angelPct;
@@ -1872,15 +2007,34 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                     </p>
                   </div>
                 </div>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setIsEditDealOpen(true)}
-                  className="gap-1.5 text-xs text-emerald-700 hover:text-emerald-800 border-emerald-300 dark:border-emerald-800 dark:text-emerald-300"
-                >
-                  <Edit3 className="h-3.5 w-3.5" />
-                  Edit Deal Spec
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      setActiveDslModal({
+                        agentName: "Deal Spec & Extraction Reconciliation Agent",
+                        agentFlow: "DEAL_SPEC_RECONCILIATION_V2",
+                        description:
+                          "Deterministic parameters reconciled from data room documents into the StartupDealSpec schema.",
+                        dslInput: specDslPayload,
+                      })
+                    }
+                    className="gap-1.5 text-xs text-neutral-700 hover:text-neutral-900 border-neutral-300 dark:border-neutral-700 dark:text-neutral-300"
+                  >
+                    <FileCode className="h-3.5 w-3.5 text-emerald-600" />
+                    Inspect Deal Spec DSL
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setIsEditDealOpen(true)}
+                    className="gap-1.5 text-xs text-emerald-700 hover:text-emerald-800 border-emerald-300 dark:border-emerald-800 dark:text-emerald-300"
+                  >
+                    <Edit3 className="h-3.5 w-3.5" />
+                    Edit Deal Spec
+                  </Button>
+                </div>
               </div>
             </CardHeader>
             <CardContent className="pt-4">
@@ -1954,6 +2108,32 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                       </td>
                       <td className="py-2.5 px-3 text-neutral-500">
                         Granular industry category used for active thesis deployment verification
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="py-2.5 px-3 font-medium text-neutral-600 dark:text-neutral-400">
+                        Target Customer Profile (ICP)
+                      </td>
+                      <td className="py-2.5 px-3">
+                        <div className={deal.targetCustomerProfile ? "font-medium text-neutral-800 dark:text-neutral-200" : "italic text-neutral-400"}>
+                          {deal.targetCustomerProfile || "Not Specified (Using B2B default)"}
+                        </div>
+                      </td>
+                      <td className="py-2.5 px-3 text-neutral-500">
+                        Buyer persona and corporate accounts matched by Commercial Intelligence agent
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="py-2.5 px-3 font-medium text-neutral-600 dark:text-neutral-400">
+                        Monetization &amp; Business Model
+                      </td>
+                      <td className="py-2.5 px-3">
+                        <div className={deal.businessModel ? "font-medium text-neutral-800 dark:text-neutral-200" : "italic text-neutral-400"}>
+                          {deal.businessModel || "Not Specified"}
+                        </div>
+                      </td>
+                      <td className="py-2.5 px-3 text-neutral-500">
+                        Revenue structure guiding buyer procurement sizing and ACV tiers
                       </td>
                     </tr>
                     <tr>
@@ -2176,6 +2356,24 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                   <Button
                     size="sm"
                     variant="outline"
+                    onClick={() =>
+                      setActiveDslModal({
+                        agentName: "Competitor Intelligence & Anti-Portfolio Agent",
+                        agentFlow: "COMPETITOR_DISCOVERY_V2",
+                        description:
+                          "Synthesizes domain landscape, uncovers direct market rivals, identifies venture backers, and verifies HTTP source URLs.",
+                        dslInput: competitorDslPayload,
+                        missingParameters: competitorMissingParams,
+                      })
+                    }
+                    className="gap-1.5 text-xs text-neutral-700 hover:text-neutral-900 border-neutral-300 dark:border-neutral-700 dark:text-neutral-300"
+                  >
+                    <FileCode className="h-3.5 w-3.5 text-purple-600" />
+                    Inspect Agent DSL Input
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
                     disabled={isDiscoveringCompetitors}
                     onClick={handleDiscoverCompetitors}
                     className="gap-1.5 text-xs text-purple-700 hover:text-purple-800 border-purple-300 dark:border-purple-800 dark:text-purple-300"
@@ -2335,14 +2533,32 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                   <div>
                     <CardTitle>Potential Customers &amp; Strategic Partners</CardTitle>
                     <p className="text-xs text-neutral-500 mt-0.5">
-                      Target enterprise buyer accounts (ICP), ecosystem integration platforms, and strategic distribution channels.
+                      Target corporate enterprise clients (buyers), industry-specific registries, and ecosystem distribution alliances.
                     </p>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Badge tone={(deal.commercialProspects || []).length > 0 ? "green" : "neutral"}>
-                    {(deal.commercialProspects || []).length} Mapped
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge tone={allCommercialProspects.length > 0 ? "green" : "neutral"}>
+                    {clientProspects.length} Clients · {partnerProspects.length} Partners
                   </Badge>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      setActiveDslModal({
+                        agentName: "Commercial Intelligence & Customer Mapping Agent",
+                        agentFlow: "COMMERCIAL_CLIENTS_AND_PARTNERS_V2",
+                        description:
+                          "Extracts and validates direct enterprise corporate clients (buyers) and strategic distribution partners based on domain, ICP, and monetization parameters.",
+                        dslInput: commercialDslPayload,
+                        missingParameters: commercialMissingParams,
+                      })
+                    }
+                    className="gap-1.5 text-xs text-neutral-700 hover:text-neutral-900 border-neutral-300 dark:border-neutral-700 dark:text-neutral-300"
+                  >
+                    <FileCode className="h-3.5 w-3.5 text-emerald-600" />
+                    Inspect Agent DSL Input
+                  </Button>
                   <Button
                     size="sm"
                     variant="outline"
@@ -2365,8 +2581,122 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                 </div>
               )}
             </CardHeader>
-            <CardContent className="pt-4">
-              {(!deal.commercialProspects || deal.commercialProspects.length === 0) ? (
+
+            <CardContent className="pt-4 space-y-4">
+              {/* Active Matching Context & DSL Parameters Banner */}
+              <div className="rounded-lg border border-emerald-200/80 bg-emerald-50/50 p-3.5 dark:border-emerald-900/40 dark:bg-emerald-950/20 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-emerald-900 dark:text-emerald-200">
+                      Active Matching Context &amp; DSL Parameters
+                    </span>
+                    {commercialMissingParams.length > 0 ? (
+                      <Badge tone="amber" className="text-[10px]">
+                        {commercialMissingParams.length} missing parameter{commercialMissingParams.length > 1 ? "s" : ""}
+                      </Badge>
+                    ) : (
+                      <Badge tone="green" className="text-[10px]">
+                        All parameters populated
+                      </Badge>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setIsEditDealOpen(true)}
+                      className="text-xs font-medium text-emerald-700 hover:text-emerald-800 dark:text-emerald-300 hover:underline inline-flex items-center gap-1 cursor-pointer"
+                    >
+                      <Edit3 className="h-3 w-3" />
+                      Edit Parameters &amp; ICP
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 text-xs">
+                  <div className="bg-white/90 dark:bg-neutral-900/80 p-2 rounded border border-emerald-100 dark:border-neutral-800">
+                    <span className="text-[10px] text-neutral-400 uppercase font-semibold block">Industry Domain</span>
+                    <span className={deal.industry ? "text-neutral-800 dark:text-neutral-200 font-medium truncate block" : "text-amber-600 dark:text-amber-400 italic text-[11px]"}>
+                      {deal.industry || "Not specified (fallback default)"}
+                    </span>
+                  </div>
+                  <div className="bg-white/90 dark:bg-neutral-900/80 p-2 rounded border border-emerald-100 dark:border-neutral-800">
+                    <span className="text-[10px] text-neutral-400 uppercase font-semibold block">Sub-Industries</span>
+                    <span className={deal.subIndustries?.length ? "text-neutral-800 dark:text-neutral-200 font-medium truncate block" : "text-amber-600 dark:text-amber-400 italic text-[11px]"}>
+                      {deal.subIndustries?.length ? deal.subIndustries.join(", ") : "Not specified"}
+                    </span>
+                  </div>
+                  <div className="bg-white/90 dark:bg-neutral-900/80 p-2 rounded border border-emerald-100 dark:border-neutral-800">
+                    <span className="text-[10px] text-neutral-400 uppercase font-semibold block">Target Customer Profile (ICP)</span>
+                    <span className={deal.targetCustomerProfile ? "text-neutral-800 dark:text-neutral-200 font-medium truncate block" : "text-amber-600 dark:text-amber-400 italic text-[11px]"}>
+                      {deal.targetCustomerProfile || "Not specified (B2B default)"}
+                    </span>
+                  </div>
+                  <div className="bg-white/90 dark:bg-neutral-900/80 p-2 rounded border border-emerald-100 dark:border-neutral-800">
+                    <span className="text-[10px] text-neutral-400 uppercase font-semibold block">Monetization Model</span>
+                    <span className={deal.businessModel ? "text-neutral-800 dark:text-neutral-200 font-medium truncate block" : "text-amber-600 dark:text-amber-400 italic text-[11px]"}>
+                      {deal.businessModel || "Not specified"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Sub-Tabs: Clients vs Strategic Partners vs All */}
+              <div className="flex flex-wrap items-center justify-between gap-3 pb-2 border-b border-neutral-100 dark:border-neutral-800">
+                <div className="inline-flex rounded-lg bg-neutral-100 p-0.5 text-xs dark:bg-neutral-800">
+                  <button
+                    type="button"
+                    onClick={() => setCommercialSubTab("clients")}
+                    className={`rounded-md px-3 py-1.5 font-medium transition-colors cursor-pointer flex items-center gap-1.5 ${
+                      commercialSubTab === "clients"
+                        ? "bg-white text-emerald-800 shadow-xs dark:bg-neutral-900 dark:text-emerald-300 font-semibold"
+                        : "text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-200"
+                    }`}
+                  >
+                    <span>Potential Clients (Corporate Buyers)</span>
+                    <Badge tone={clientProspects.length > 0 ? "green" : "neutral"} className="text-[10px] px-1.5 py-0">
+                      {clientProspects.length}
+                    </Badge>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCommercialSubTab("partners")}
+                    className={`rounded-md px-3 py-1.5 font-medium transition-colors cursor-pointer flex items-center gap-1.5 ${
+                      commercialSubTab === "partners"
+                        ? "bg-white text-purple-800 shadow-xs dark:bg-neutral-900 dark:text-purple-300 font-semibold"
+                        : "text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-200"
+                    }`}
+                  >
+                    <span>Strategic &amp; Platform Partners</span>
+                    <Badge tone={partnerProspects.length > 0 ? "purple" : "neutral"} className="text-[10px] px-1.5 py-0">
+                      {partnerProspects.length}
+                    </Badge>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCommercialSubTab("all")}
+                    className={`rounded-md px-3 py-1.5 font-medium transition-colors cursor-pointer flex items-center gap-1.5 ${
+                      commercialSubTab === "all"
+                        ? "bg-white text-neutral-900 shadow-xs dark:bg-neutral-900 dark:text-neutral-100 font-semibold"
+                        : "text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-200"
+                    }`}
+                  >
+                    <span>All Prospects</span>
+                    <Badge tone="neutral" className="text-[10px] px-1.5 py-0">
+                      {allCommercialProspects.length}
+                    </Badge>
+                  </button>
+                </div>
+                <div className="text-[11px] text-neutral-500">
+                  {commercialSubTab === "clients"
+                    ? "Direct corporate and enterprise procurement buyers matching ICP"
+                    : commercialSubTab === "partners"
+                    ? "Industry registries, data alliance, and co-selling platform partners"
+                    : "All mapped commercial entities"}
+                </div>
+              </div>
+
+              {/* Prospects Content */}
+              {allCommercialProspects.length === 0 ? (
                 <div className="py-8 text-center space-y-3">
                   <Building2 className="mx-auto h-7 w-7 text-neutral-400" />
                   <p className="text-xs text-neutral-500 max-w-md mx-auto">
@@ -2386,9 +2716,31 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                     Run Commercial Discovery
                   </Button>
                 </div>
+              ) : visibleCommercialProspects.length === 0 ? (
+                <div className="py-8 text-center space-y-3 rounded-lg border border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-800/30">
+                  <Building2 className="mx-auto h-6 w-6 text-neutral-400" />
+                  <p className="text-xs text-neutral-600 dark:text-neutral-300 max-w-md mx-auto">
+                    {commercialSubTab === "clients"
+                      ? "No direct corporate clients were found in the earlier run (only partners were captured). Click below to re-run with domain-specific client mapping."
+                      : "No strategic partners found in this view."}
+                  </p>
+                  <Button
+                    size="sm"
+                    disabled={isDiscoveringCommercial}
+                    onClick={handleDiscoverCommercial}
+                    className="bg-emerald-700 hover:bg-emerald-800 text-white text-xs gap-1.5"
+                  >
+                    {isDiscoveringCommercial ? (
+                      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Sparkles className="h-3.5 w-3.5" />
+                    )}
+                    Discover Clients &amp; Partners Now
+                  </Button>
+                </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-                  {deal.commercialProspects.map((prospect) => (
+                  {visibleCommercialProspects.map((prospect) => (
                     <div
                       key={prospect.id}
                       className="rounded-lg border border-neutral-200/90 bg-white p-3.5 space-y-2.5 dark:border-neutral-800 dark:bg-neutral-900/70"
@@ -2418,14 +2770,17 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                           )}
                         </div>
 
-                        <div className="flex flex-col items-end gap-1">
+                        <div className="flex flex-col items-end gap-1 shrink-0">
                           <Badge
                             tone={
-                              prospect.category === "ENTERPRISE_CUSTOMER"
+                              prospect.category === "ENTERPRISE_CUSTOMER" ||
+                              prospect.category === "MIDMARKET_CUSTOMER" ||
+                              prospect.category === "INSTITUTIONAL_BUYER"
                                 ? "green"
                                 : prospect.category === "SMB_CUSTOMER_SEGMENT"
                                 ? "blue"
-                                : prospect.category === "STRATEGIC_CHANNEL_PARTNER"
+                                : prospect.category === "STRATEGIC_CHANNEL_PARTNER" ||
+                                  prospect.category === "REGULATORY_REGISTRY_PARTNER"
                                 ? "purple"
                                 : prospect.category === "INTEGRATION_ALLIANCE"
                                 ? "amber"
@@ -2433,13 +2788,21 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                             }
                           >
                             {prospect.category === "ENTERPRISE_CUSTOMER"
-                              ? "Enterprise Buyer"
+                              ? "Enterprise Client"
+                              : prospect.category === "MIDMARKET_CUSTOMER"
+                              ? "Mid-Market Client"
+                              : prospect.category === "INSTITUTIONAL_BUYER"
+                              ? "Institutional Buyer"
                               : prospect.category === "SMB_CUSTOMER_SEGMENT"
-                              ? "SMB Customer"
+                              ? "SMB Client"
                               : prospect.category === "STRATEGIC_CHANNEL_PARTNER"
                               ? "Channel Partner"
                               : prospect.category === "INTEGRATION_ALLIANCE"
                               ? "Integration Alliance"
+                              : prospect.category === "REGULATORY_REGISTRY_PARTNER"
+                              ? "Registry & Standard Partner"
+                              : prospect.category === "DATA_OR_SUPPLY_PARTNER"
+                              ? "Data / Supply Partner"
                               : "Ecosystem Partner"}
                           </Badge>
                           <span className="text-[10px] font-mono font-medium text-emerald-600 dark:text-emerald-400">
@@ -2461,7 +2824,11 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                         </div>
                         {prospect.strategicSynergy && (
                           <div className="pt-1 border-t border-neutral-200/60 dark:border-neutral-700/60">
-                            <span className="font-medium text-emerald-700 dark:text-emerald-400">GTM / Synergy Leverage: </span>
+                            <span className="font-medium text-emerald-700 dark:text-emerald-400">
+                              {["ENTERPRISE_CUSTOMER", "MIDMARKET_CUSTOMER", "INSTITUTIONAL_BUYER", "SMB_CUSTOMER_SEGMENT"].includes(prospect.category)
+                                ? "Procurement Fit & Corporate Drivers: "
+                                : "GTM / Synergy Leverage: "}
+                            </span>
                             <span>{prospect.strategicSynergy}</span>
                           </div>
                         )}
@@ -2470,12 +2837,12 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                       <div className="pt-1 text-[10px] text-neutral-400 flex flex-wrap items-center justify-between gap-1">
                         <div className="flex items-center gap-1.5 truncate max-w-[70%]">
                           {prospect.sourceVerified ? (
-                            <span className="inline-flex items-center gap-0.5 text-emerald-600 font-medium">
+                            <span className="inline-flex items-center gap-0.5 text-emerald-600 font-medium shrink-0">
                               <CheckCircle2 className="h-3 w-3" />
                               HTTP 200 Verified
                             </span>
                           ) : (
-                            <span className="text-neutral-400">Web Research Verified</span>
+                            <span className="text-neutral-400 shrink-0">Web Research Verified</span>
                           )}
                           {prospect.sourceUrl && (
                             <a
@@ -2756,6 +3123,23 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
         isOpen={Boolean(cachedSnapshotUrl)}
         onClose={() => setCachedSnapshotUrl(null)}
       />
+
+      {/* Agent DSL Input Inspector Modal */}
+      {activeDslModal && (
+        <AgentDslModal
+          isOpen={Boolean(activeDslModal)}
+          agentName={activeDslModal.agentName}
+          agentFlow={activeDslModal.agentFlow}
+          description={activeDslModal.description}
+          dslInput={activeDslModal.dslInput}
+          missingParameters={activeDslModal.missingParameters}
+          onClose={() => setActiveDslModal(null)}
+          onEditParameters={() => {
+            setActiveDslModal(null);
+            setIsEditDealOpen(true);
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -20,11 +20,28 @@ export async function GET(
 
   const deal = await db.startupDeal.findUnique({
     where: { id: dealId },
-    select: { industry: true, subIndustries: true },
+    select: {
+      companyName: true,
+      stage: true,
+      primaryVertical: true,
+      industry: true,
+      subIndustries: true,
+      legalEntityJurisdiction: true,
+    },
   });
+
+  const dslInput = {
+    companyName: deal?.companyName ?? "",
+    stage: deal?.stage ?? "SEED",
+    primaryVertical: deal?.primaryVertical ?? "B2B_SAAS",
+    industry: deal?.industry ?? "",
+    subIndustries: deal?.subIndustries ?? [],
+    jurisdiction: deal?.legalEntityJurisdiction ?? "Delaware (US)",
+  };
 
   return NextResponse.json({
     dealId,
+    dslInput,
     industry: deal?.industry ?? null,
     subIndustries: deal?.subIndustries ?? [],
     competitors,
@@ -168,6 +185,7 @@ export async function POST(
 
     return NextResponse.json({
       ok: true,
+      dslInput: result.dslInput,
       industry: result.industry,
       subIndustries: result.subIndustries,
       competitors: result.competitors,

@@ -125,9 +125,12 @@ export type StartupCompetitorExtraction = z.infer<typeof StartupCompetitorExtrac
 
 export const CommercialProspectCategorySchema = z.enum([
   "ENTERPRISE_CUSTOMER",
+  "MIDMARKET_CUSTOMER",
+  "INSTITUTIONAL_BUYER",
   "SMB_CUSTOMER_SEGMENT",
   "STRATEGIC_CHANNEL_PARTNER",
   "INTEGRATION_ALLIANCE",
+  "REGULATORY_REGISTRY_PARTNER",
   "DATA_OR_SUPPLY_PARTNER",
 ]);
 export type CommercialProspectCategory = z.infer<typeof CommercialProspectCategorySchema>;

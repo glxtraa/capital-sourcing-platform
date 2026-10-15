@@ -98,6 +98,10 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ dealId
     legalEntityJurisdiction,
     stage,
     primaryVertical,
+    industry,
+    subIndustries,
+    targetCustomerProfile,
+    businessModel,
     targetRaiseUsd,
     valuationCapUsd,
     instrumentType,
@@ -114,7 +118,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ dealId
   } = body;
 
   await db.$transaction(async (tx) => {
-    // 1. Update core deal metadata including jurisdiction
+    // 1. Update core deal metadata including jurisdiction, industry & ICP profile
     await tx.startupDeal.update({
       where: { id: dealId },
       data: {
@@ -122,8 +126,13 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ dealId
         ...(legalEntityJurisdiction ? { legalEntityJurisdiction: String(legalEntityJurisdiction).trim() } : {}),
         ...(stage ? { stage } : {}),
         ...(primaryVertical ? { primaryVertical } : {}),
+        ...(industry !== undefined ? { industry: typeof industry === "string" ? industry.trim() : null } : {}),
+        ...(Array.isArray(subIndustries) ? { subIndustries } : {}),
+        ...(targetCustomerProfile !== undefined ? { targetCustomerProfile: typeof targetCustomerProfile === "string" ? targetCustomerProfile.trim() : null } : {}),
+        ...(businessModel !== undefined ? { businessModel: typeof businessModel === "string" ? businessModel.trim() : null } : {}),
       },
     });
+
 
     // 2. Update financing ask
     if (deal.financingAsks.length > 0) {
