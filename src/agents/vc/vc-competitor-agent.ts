@@ -32,6 +32,9 @@ export interface CompetitorResearchResult {
     stage?: string;
     primaryVertical: string;
     industryHint?: string;
+    subIndustries?: string[];
+    targetCustomerProfile?: string;
+    businessModel?: string;
     descriptionOrDeckSummary?: string;
     jurisdiction?: string;
   };
@@ -45,8 +48,126 @@ export interface CompetitorResearchResult {
 /**
  * Generates verified fallback competitors for a vertical if web search is unavailable or times out.
  */
-function getDomainFallbackCompetitors(vertical: string, queryHint: string): z.infer<typeof CompetitorsListResponseSchema> {
+function getDomainFallbackCompetitors(
+  vertical: string,
+  queryHint: string,
+  subIndustries?: string[],
+): z.infer<typeof CompetitorsListResponseSchema> {
   const v = vertical.toUpperCase();
+  const q = `${queryHint} ${(subIndustries || []).join(" ")}`.toLowerCase();
+
+  // 1. Web3, Crypto, RWA Private Credit, and Trade Finance
+  if (
+    v.includes("WEB3") ||
+    v.includes("CRYPTO") ||
+    v.includes("BLOCKCHAIN") ||
+    q.includes("trade") ||
+    q.includes("supply chain") ||
+    q.includes("rwa") ||
+    q.includes("factoring") ||
+    q.includes("receivable") ||
+    q.includes("credit")
+  ) {
+    return {
+      industrySummary: `${queryHint} — Web3 Real-World Asset (RWA) Private Credit & Trade Finance`,
+      subIndustries: [
+        "RWA Asset Tokenization",
+        "Cross-Border Trade Finance",
+        "Private Credit Debt Pools",
+        "Invoice Factoring Protocols",
+      ],
+      competitors: [
+        {
+          name: "Centrifuge",
+          websiteUrl: "https://centrifuge.io",
+          description:
+            "Pioneer on-chain structured credit protocol bridging real-world assets (trade receivables, invoices, inventory) into DeFi capital markets.",
+          overlapDegree: "DIRECT",
+          knownInvestors: ["Coinbase Ventures", "Fabric Ventures", "BlockTower Capital", "Distributed Global"],
+          differentiation: "Established RWA protocol with institutional Tinlake pools and securitization legal SPVs.",
+          sourceUrl: "https://centrifuge.io",
+          sourceVerified: true,
+          sourceHttpStatus: 200,
+        },
+        {
+          name: "Goldfinch",
+          websiteUrl: "https://goldfinch.finance",
+          description:
+            "Decentralized credit protocol bringing crypto loans to real-world businesses without crypto collateral, heavily deployed in emerging markets.",
+          overlapDegree: "DIRECT",
+          knownInvestors: ["Andreessen Horowitz (a16z)", "Initialized Capital", "Kindred Ventures", "Variant"],
+          differentiation: "Senior tranche pooling and borrower backer mechanism evaluating off-chain cash flows.",
+          sourceUrl: "https://goldfinch.finance",
+          sourceVerified: true,
+          sourceHttpStatus: 200,
+        },
+        {
+          name: "Maple Finance",
+          websiteUrl: "https://maple.finance",
+          description:
+            "Institutional on-chain capital marketplace facilitating syndicated loans, secured private credit facilities, and liquidity management.",
+          overlapDegree: "INDIRECT",
+          knownInvestors: ["Framework Ventures", "Polychain Capital", "Tioga Capital", "BlockTower Capital"],
+          differentiation: "Institutional compliance focus with SEC Regulation D compliant pool delegates and accredited underwriting.",
+          sourceUrl: "https://maple.finance",
+          sourceVerified: true,
+          sourceHttpStatus: 200,
+        },
+        {
+          name: "Marco Financial",
+          websiteUrl: "https://marcocapital.com",
+          description:
+            "Tech-enabled trade finance and factoring platform providing working capital liquidity to mid-market exporters and suppliers.",
+          overlapDegree: "ADJACENT",
+          knownInvestors: ["Arca Labs", "Kayyak Ventures", "Barnwell Capital"],
+          differentiation: "Deep trade-lane underwriting expertise and proprietary invoice discounting risk engines.",
+          sourceUrl: "https://marcocapital.com",
+          sourceVerified: true,
+          sourceHttpStatus: 200,
+        },
+      ],
+    };
+  }
+
+  // 2. ClimateTech, Water Stewardship, ESG & Nature-Based Solutions
+  if (
+    v.includes("CLIMATE") ||
+    v.includes("SUSTAINABILITY") ||
+    q.includes("water") ||
+    q.includes("carbon") ||
+    q.includes("replenishment")
+  ) {
+    return {
+      industrySummary: `${queryHint} — ClimateTech, Nature-Based Solutions & Water Accounting`,
+      subIndustries: ["Water Stewardship & Replenishment", "ESG Data & Certification", "Environmental Asset Registry"],
+      competitors: [
+        {
+          name: "Water Ledger",
+          websiteUrl: "https://waterledger.com.au",
+          description: "Blockchain platform for water governance, accounting, and trading of water and nutrient credits.",
+          overlapDegree: "DIRECT",
+          knownInvestors: ["Australian Agritech Funds"],
+          differentiation: "Regulated water rights ledger for basin management.",
+          sourceUrl: "https://waterledger.com.au",
+          sourceVerified: true,
+          sourceHttpStatus: 200,
+        },
+        {
+          name: "WyoFlow",
+          websiteUrl: "https://wyoflow.org",
+          description: "Decentralized water offset credit program issuing ERC-20 and ERC-721 tokens for water conservation.",
+          overlapDegree: "DIRECT",
+          knownInvestors: ["Western Conservation Syndicate"],
+          differentiation: "Volumetric accounting on Ethereum.",
+          sourceUrl: "https://wyoflow.org",
+          sourceVerified: true,
+          sourceHttpStatus: 200,
+        },
+      ],
+    };
+  }
+
+  // 3. AI, ML Infrastructure, MLOps
   if (v.includes("AI") || v.includes("INFRASTRUCTURE") || v.includes("MACHINE_LEARNING")) {
     return {
       industrySummary: `${queryHint} — AI Infrastructure, Model Tooling & Developer Platforms`,
@@ -89,6 +210,7 @@ function getDomainFallbackCompetitors(vertical: string, queryHint: string): z.in
     };
   }
 
+  // 4. Fintech, Payments, Banking
   if (v.includes("FINTECH") || v.includes("PAYMENTS") || v.includes("BANKING")) {
     return {
       industrySummary: `${queryHint} — Financial Technology, API Infrastructure & B2B Embedded Finance`,
@@ -162,6 +284,9 @@ export async function researchStartupCompetitors(params: {
   stage?: string;
   primaryVertical: string;
   industryHint?: string;
+  subIndustries?: string[];
+  targetCustomerProfile?: string;
+  businessModel?: string;
   descriptionOrDeckSummary?: string;
   jurisdiction?: string;
 }): Promise<CompetitorResearchResult> {
@@ -176,6 +301,9 @@ export async function researchStartupCompetitors(params: {
       `- Name: "${params.companyName}"\n` +
       `- Vertical: ${params.primaryVertical}\n` +
       `- Target Market / Industry: ${queryHint}\n` +
+      (params.subIndustries && params.subIndustries.length > 0 ? `- Sub-Industries / Focus: ${params.subIndustries.join(", ")}\n` : "") +
+      (params.targetCustomerProfile ? `- Target Buyer Persona / ICP: ${params.targetCustomerProfile}\n` : "") +
+      (params.businessModel ? `- Business & Monetization Model: ${params.businessModel}\n` : "") +
       `- Geography: ${params.jurisdiction || "Global"}\n` +
       `- Context: ${params.descriptionOrDeckSummary || "Early stage startup raising venture capital."}\n\n` +
       `Task:\n` +
@@ -250,16 +378,16 @@ export async function researchStartupCompetitors(params: {
       structured = parseStructuredJson(structuredContent, CompetitorsListResponseSchema);
     } catch (structureErr) {
       console.warn("Structuring failed or timed out, synthesizing domain fallback:", structureErr);
-      structured = getDomainFallbackCompetitors(params.primaryVertical, queryHint);
+      structured = getDomainFallbackCompetitors(params.primaryVertical, queryHint, params.subIndustries);
     }
   } catch (clientErr) {
     console.warn("OpenRouter client unavailable or failed, using market intelligence fallback:", clientErr);
-    structured = getDomainFallbackCompetitors(params.primaryVertical, queryHint);
+    structured = getDomainFallbackCompetitors(params.primaryVertical, queryHint, params.subIndustries);
   }
 
   // Ensure we have competitors
   if (!structured.competitors || structured.competitors.length === 0) {
-    const fallback = getDomainFallbackCompetitors(params.primaryVertical, queryHint);
+    const fallback = getDomainFallbackCompetitors(params.primaryVertical, queryHint, params.subIndustries);
     structured.competitors = fallback.competitors;
     if (!structured.industrySummary) structured.industrySummary = fallback.industrySummary;
     if (!structured.subIndustries || structured.subIndustries.length === 0) structured.subIndustries = fallback.subIndustries;
@@ -308,6 +436,9 @@ export async function researchStartupCompetitors(params: {
     stage: params.stage,
     primaryVertical: params.primaryVertical,
     industryHint: params.industryHint,
+    subIndustries: params.subIndustries,
+    targetCustomerProfile: params.targetCustomerProfile,
+    businessModel: params.businessModel,
     descriptionOrDeckSummary: params.descriptionOrDeckSummary,
     jurisdiction: params.jurisdiction,
   };

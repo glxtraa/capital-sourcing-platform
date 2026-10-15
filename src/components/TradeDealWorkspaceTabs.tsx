@@ -8,6 +8,9 @@ import {
   Search,
   CheckCircle2,
   ExternalLink,
+  Eye,
+  EyeOff,
+  Filter,
   ChevronDown,
   ChevronUp,
   Mail,
@@ -143,6 +146,11 @@ export function TradeDealWorkspaceTabs({ deal }: TradeDealWorkspaceTabsProps) {
     documentTypes: string[];
     extractedRaw: any;
   } | null>(null);
+  const [hideExcludedTrade, setHideExcludedTrade] = useState<boolean>(true);
+
+  const tradeExcludedMatches = deal.matches.filter((m) => m.verdict === "EXCLUDED");
+  const tradeQualifiedMatches = deal.matches.filter((m) => m.verdict !== "EXCLUDED");
+  const displayedTradeMatches = hideExcludedTrade ? tradeQualifiedMatches : deal.matches;
 
   function renderHighlightedContext(context: string, snippet?: string | null) {
     if (!snippet || !context) return context;
@@ -551,40 +559,77 @@ export function TradeDealWorkspaceTabs({ deal }: TradeDealWorkspaceTabsProps) {
           {deal.matches.length > 0 ? (
             <Card>
               <CardHeader>
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <CardTitle>Two-Tier Funder Matches &amp; Verified Rate Sources</CardTitle>
                     <p className="text-xs text-neutral-500 mt-0.5">
                       Strict Pricing Provenance, tariff quotations, and direct trade finance desk contacts.
                     </p>
                   </div>
-                  <Badge tone="purple">Tier 1 Umbrella → Tier 2 Modular</Badge>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge tone="purple">Tier 1 Umbrella → Tier 2 Modular</Badge>
+                    {tradeExcludedMatches.length > 0 && (
+                      <div className="inline-flex rounded-lg border border-neutral-200 bg-white p-0.5 dark:border-neutral-700 dark:bg-neutral-800 shadow-xs">
+                        <button
+                          type="button"
+                          onClick={() => setHideExcludedTrade(true)}
+                          className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-semibold transition-all ${
+                            hideExcludedTrade
+                              ? "bg-purple-600 text-white shadow-xs"
+                              : "text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-200"
+                          }`}
+                        >
+                          <EyeOff className="h-3 w-3" />
+                          Eligible ({tradeQualifiedMatches.length})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setHideExcludedTrade(false)}
+                          className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-semibold transition-all ${
+                            !hideExcludedTrade
+                              ? "bg-neutral-800 text-white shadow-xs dark:bg-neutral-700"
+                              : "text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-200"
+                          }`}
+                        >
+                          <Eye className="h-3 w-3" />
+                          All ({deal.matches.length})
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </CardHeader>
               <CardContent className="space-y-4">
-                {deal.matches.map((m) => {
-                  const diagnostics = validateTradeFunderDSL(m.funder as any);
-                  const contactEmail =
-                    m.funder.deskContacts?.contactEmail ||
-                    (m.funder.contact?.includes("@") ? m.funder.contact.split("|")[0].trim() : null);
-                  const contactPhone =
-                    m.funder.deskContacts?.phone ||
-                    (m.funder.contact?.includes("+") ? m.funder.contact.split("|")[1]?.trim() : null);
-                  const portalUrl = m.funder.deskContacts?.applicationPortalUrl || m.funder.applicationUrl;
-                  const officeLoc = m.funder.deskContacts?.officeLocation;
-                  const deptName = m.funder.deskContacts?.departmentName;
-                  const pricingProv = m.funder.pricingProvenance;
-                  const evidenceText = pricingProv?.evidenceSnippet || m.funder.rateEvidenceSnippet;
+                {displayedTradeMatches.length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-neutral-200 dark:border-neutral-800 p-6 text-center text-xs text-neutral-500">
+                    All {deal.matches.length} funder matches were excluded by gating criteria. Toggle &quot;All&quot; above to view excluded funder cards.
+                  </div>
+                ) : (
+                  displayedTradeMatches.map((m) => {
+                    const diagnostics = validateTradeFunderDSL(m.funder as any);
+                    const contactEmail =
+                      m.funder.deskContacts?.contactEmail ||
+                      (m.funder.contact?.includes("@") ? m.funder.contact.split("|")[0].trim() : null);
+                    const contactPhone =
+                      m.funder.deskContacts?.phone ||
+                      (m.funder.contact?.includes("+") ? m.funder.contact.split("|")[1]?.trim() : null);
+                    const portalUrl = m.funder.deskContacts?.applicationPortalUrl || m.funder.applicationUrl;
+                    const officeLoc = m.funder.deskContacts?.officeLocation;
+                    const deptName = m.funder.deskContacts?.departmentName;
+                    const pricingProv = m.funder.pricingProvenance;
+                    const evidenceText = pricingProv?.evidenceSnippet || m.funder.rateEvidenceSnippet;
 
-                  return (
-                    <div
-                      key={m.id}
-                      className={`rounded-xl border p-4 text-sm transition-all ${
-                        m.isTier1
-                          ? "border-purple-300 bg-purple-50/20 shadow-sm dark:border-purple-900/60 dark:bg-purple-950/20"
-                          : "border-neutral-200 dark:border-neutral-800"
-                      }`}
-                    >
+                    return (
+                      <div
+                        key={m.id}
+                        className={`rounded-xl border p-4 text-sm transition-all ${
+                          m.verdict === "EXCLUDED"
+                            ? "border-dashed border-neutral-300 dark:border-neutral-700 bg-neutral-50/50 dark:bg-neutral-900/40 opacity-80"
+                            : m.isTier1
+                            ? "border-purple-300 bg-purple-50/20 shadow-sm dark:border-purple-900/60 dark:bg-purple-950/20"
+                            : "border-neutral-200 dark:border-neutral-800"
+                        }`}
+                      >
                       {/* Top Header: Funder Name, Badges & Pricing */}
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
@@ -834,7 +879,8 @@ export function TradeDealWorkspaceTabs({ deal }: TradeDealWorkspaceTabsProps) {
                       )}
                     </div>
                   );
-                })}
+                })
+              )}
               </CardContent>
             </Card>
           ) : (

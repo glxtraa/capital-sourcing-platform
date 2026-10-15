@@ -14,9 +14,12 @@ import {
   DollarSign,
   Edit3,
   ExternalLink,
+  Eye,
+  EyeOff,
   FileCode,
   FileSpreadsheet,
   FileText,
+  Filter,
   Globe,
   Info,
   Layers,
@@ -607,6 +610,7 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
 
   const [isDiscoveringCompetitors, setIsDiscoveringCompetitors] = useState(false);
   const [competitorNotice, setCompetitorNotice] = useState<string | null>(null);
+  const [hideExcluded, setHideExcluded] = useState<boolean>(true);
 
   async function handleDiscoverCompetitors() {
     setIsDiscoveringCompetitors(true);
@@ -914,11 +918,22 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
   const syndicateUsd = Math.round((targetRaise * syndicatePct) / 100);
   const angelUsd = Math.round((targetRaise * angelPct) / 100);
 
-  // Group matches by 4 tiers
-  const tier1Matches = deal.matches.filter((m) => m.tier === "TIER_1_LEAD");
-  const tier2Matches = deal.matches.filter((m) => m.tier === "TIER_2_SYNDICATE");
-  const tier3Matches = deal.matches.filter((m) => m.tier === "TIER_3_ANGEL");
-  const tier4Matches = deal.matches.filter((m) => m.tier === "TIER_4_ACCELERATOR");
+  // Match exclusion and qualification partitioning
+  const excludedMatches = deal.matches.filter((m) => m.verdict === "EXCLUDED");
+  const qualifiedMatches = deal.matches.filter((m) => m.verdict !== "EXCLUDED");
+  const displayedMatches = hideExcluded ? qualifiedMatches : deal.matches;
+
+  // Raw counts per tier for stats & empty state messaging
+  const rawTier1Matches = deal.matches.filter((m) => m.tier === "TIER_1_LEAD");
+  const rawTier2Matches = deal.matches.filter((m) => m.tier === "TIER_2_SYNDICATE");
+  const rawTier3Matches = deal.matches.filter((m) => m.tier === "TIER_3_ANGEL");
+  const rawTier4Matches = deal.matches.filter((m) => m.tier === "TIER_4_ACCELERATOR");
+
+  // Group displayed matches by 4 tiers
+  const tier1Matches = displayedMatches.filter((m) => m.tier === "TIER_1_LEAD");
+  const tier2Matches = displayedMatches.filter((m) => m.tier === "TIER_2_SYNDICATE");
+  const tier3Matches = displayedMatches.filter((m) => m.tier === "TIER_3_ANGEL");
+  const tier4Matches = displayedMatches.filter((m) => m.tier === "TIER_4_ACCELERATOR");
 
   async function handleApplyCustomAllocation() {
     if (totalPct !== 100) return;
@@ -964,7 +979,9 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
           <Sliders className="h-4 w-4" />
           <span>Syndicate Match &amp; Allocator</span>
           <Badge tone={deal.matches.length > 0 ? "green" : "neutral"} className="ml-1">
-            {deal.matches.length}
+            {hideExcluded && excludedMatches.length > 0
+              ? `${qualifiedMatches.length}/${deal.matches.length}`
+              : deal.matches.length}
           </Badge>
         </button>
 
@@ -1284,6 +1301,72 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                 jurisdiction={deal.legalEntityJurisdiction}
               />
 
+              {/* Match Filter & Exclusion Toggle Toolbar */}
+              <div className="flex flex-wrap items-center justify-between gap-3 bg-neutral-50 dark:bg-neutral-900/70 p-3.5 rounded-xl border border-neutral-200 dark:border-neutral-800 shadow-xs">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-lg bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 shadow-xs text-neutral-600 dark:text-neutral-300">
+                    <Filter className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-neutral-900 dark:text-neutral-100">
+                        Syndicate Match Visibility
+                      </span>
+                      <span className="text-xs font-semibold text-neutral-500">
+                        ({displayedMatches.length} of {deal.matches.length} fund matches shown)
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                      {hideExcluded
+                        ? excludedMatches.length > 0
+                          ? `${excludedMatches.length} excluded fund match${excludedMatches.length === 1 ? "" : "es"} toggled out to streamline visualization.`
+                          : "All matched investors satisfy thesis and stage gating requirements."
+                        : `Displaying all fund matches, including ${excludedMatches.length} excluded by gating rules.`}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <div className="inline-flex rounded-lg border border-neutral-200 bg-white p-0.5 dark:border-neutral-700 dark:bg-neutral-800 shadow-xs">
+                    <button
+                      type="button"
+                      onClick={() => setHideExcluded(true)}
+                      className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-all ${
+                        hideExcluded
+                          ? "bg-emerald-600 text-white shadow-xs"
+                          : "text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-200"
+                      }`}
+                    >
+                      <EyeOff className="h-3.5 w-3.5" />
+                      Qualified Only ({qualifiedMatches.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setHideExcluded(false)}
+                      className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-all ${
+                        !hideExcluded
+                          ? "bg-neutral-800 text-white shadow-xs dark:bg-neutral-700"
+                          : "text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-200"
+                      }`}
+                    >
+                      <Eye className="h-3.5 w-3.5" />
+                      Show All ({deal.matches.length})
+                      {excludedMatches.length > 0 && (
+                        <span
+                          className={`ml-1 px-1.5 py-0.2 rounded-full text-[10px] font-medium ${
+                            !hideExcluded
+                              ? "bg-neutral-700 text-neutral-200 dark:bg-neutral-600"
+                              : "bg-neutral-100 text-neutral-600 dark:bg-neutral-700 dark:text-neutral-300"
+                          }`}
+                        >
+                          +{excludedMatches.length} excluded
+                        </span>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
               {/* TIER 1: LEAD INSTITUTIONAL VCS */}
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
@@ -1291,6 +1374,11 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                     <Badge tone="green">Tier 1: Lead Mandate</Badge>
                     <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100">
                       Institutional Lead VCs ({tier1Matches.length})
+                      {hideExcluded && rawTier1Matches.length > tier1Matches.length && (
+                        <span className="text-xs font-normal text-neutral-400 ml-1.5">
+                          ({rawTier1Matches.length - tier1Matches.length} excluded hidden)
+                        </span>
+                      )}
                     </h3>
                   </div>
                   <span className="text-xs text-neutral-500">
@@ -1299,21 +1387,44 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                 </div>
 
                 <div className="grid gap-3">
-                  {tier1Matches.map((match) => (
-                    <Card
-                      key={match.id}
-                      className="transition-all hover:border-emerald-300 dark:hover:border-emerald-800"
-                    >
-                      <CardContent className="pt-4 space-y-2.5">
-                        <div className="flex flex-wrap items-start justify-between gap-2">
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <h4 className="font-semibold text-neutral-900 dark:text-neutral-100 text-sm">
-                                {match.investor.name}
-                              </h4>
-                              {match.isLeadCandidate && (
-                                <Badge tone="green">Primary Lead Candidate</Badge>
-                              )}
+                  {tier1Matches.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-neutral-200 dark:border-neutral-800 p-5 text-center space-y-1 bg-neutral-50/40 dark:bg-neutral-900/20">
+                      <p className="text-xs font-medium text-neutral-600 dark:text-neutral-300">
+                        {rawTier1Matches.length > 0 && hideExcluded
+                          ? `${rawTier1Matches.length} Lead candidate${rawTier1Matches.length === 1 ? "" : "s"} excluded by gating criteria.`
+                          : "No institutional lead candidates matched for this stage and sector."}
+                      </p>
+                      {rawTier1Matches.length > 0 && hideExcluded && (
+                        <p className="text-[11px] text-neutral-400">
+                          Toggle &quot;Show All&quot; in the filter bar above to review non-qualifying lead mandates.
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    tier1Matches.map((match) => (
+                      <Card
+                        key={match.id}
+                        className={`transition-all ${
+                          match.verdict === "EXCLUDED"
+                            ? "border-dashed border-neutral-300 dark:border-neutral-700 bg-neutral-50/50 dark:bg-neutral-900/40 opacity-80"
+                            : "hover:border-emerald-300 dark:hover:border-emerald-800"
+                        }`}
+                      >
+                        <CardContent className="pt-4 space-y-2.5">
+                          <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <h4 className="font-semibold text-neutral-900 dark:text-neutral-100 text-sm">
+                                  {match.investor.name}
+                                </h4>
+                                {match.verdict === "EXCLUDED" && (
+                                  <Badge tone="neutral" className="bg-neutral-200 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
+                                    Excluded
+                                  </Badge>
+                                )}
+                                {match.isLeadCandidate && (
+                                  <Badge tone="green">Primary Lead Candidate</Badge>
+                                )}
                               {(() => {
                                 const notes = `${match.competitorConflictNotes || ""} ${match.conflictingPortfolioCompany || ""}`.toLowerCase();
                                 const isExplicitNone = notes.includes("no conflict") || notes.includes("not in portfolio") || notes.includes("none");
@@ -1396,7 +1507,8 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                         <MatchConflictAndAuditDetails match={match} onOpenSnapshot={(u) => setCachedSnapshotUrl(u)} />
                       </CardContent>
                     </Card>
-                  ))}
+                  ))
+                )}
                 </div>
               </div>
 
@@ -1407,6 +1519,11 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                     <Badge tone="blue">Tier 2: Co-Invest &amp; SPV</Badge>
                     <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100">
                       Angel Platforms &amp; Scout Syndicates ({tier2Matches.length})
+                      {hideExcluded && rawTier2Matches.length > tier2Matches.length && (
+                        <span className="text-xs font-normal text-neutral-400 ml-1.5">
+                          ({rawTier2Matches.length - tier2Matches.length} excluded hidden)
+                        </span>
+                      )}
                     </h3>
                   </div>
                   <span className="text-xs text-neutral-500">
@@ -1415,72 +1532,94 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                 </div>
 
                 <div className="grid gap-3">
-                  {tier2Matches.map((match) => (
-                    <Card key={match.id}>
-                      <CardContent className="pt-4 space-y-2.5">
-                        <div className="flex items-center justify-between gap-2">
-                          <div>
-                            <div className="flex flex-wrap items-center gap-2">
-                              <h4 className="font-semibold text-neutral-900 dark:text-neutral-100 text-sm">
-                                {match.investor.name}
-                              </h4>
-                              {match.isLeadCandidate && (
-                                <Badge tone="green">Co-Lead Capable</Badge>
-                              )}
-                              {(() => {
-                                const notes = `${match.competitorConflictNotes || ""} ${match.conflictingPortfolioCompany || ""}`.toLowerCase();
-                                const isExplicitNone = notes.includes("no conflict") || notes.includes("not in portfolio") || notes.includes("none");
-                                if (isExplicitNone) return null;
-                                if (notes.includes("adjacent") || notes.includes("non-blocking")) {
-                                  return <Badge tone="amber">Adjacent Holding</Badge>;
-                                }
-                                if (match.portfolioConflictDetected) {
-                                  return <Badge tone="red">Competitor in Portfolio</Badge>;
-                                }
-                                return null;
-                              })()}
+                  {tier2Matches.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-neutral-200 dark:border-neutral-800 p-5 text-center space-y-1 bg-neutral-50/40 dark:bg-neutral-900/20">
+                      <p className="text-xs font-medium text-neutral-600 dark:text-neutral-300">
+                        {rawTier2Matches.length > 0 && hideExcluded
+                          ? `${rawTier2Matches.length} syndicate / co-invest candidate${rawTier2Matches.length === 1 ? "" : "s"} excluded by gating criteria.`
+                          : "No co-invest / scout syndicates found."}
+                      </p>
+                      {rawTier2Matches.length > 0 && hideExcluded && (
+                        <p className="text-[11px] text-neutral-400">
+                          Toggle &quot;Show All&quot; in the filter bar above to review non-qualifying co-investors.
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    tier2Matches.map((match) => (
+                      <Card
+                        key={match.id}
+                        className={`transition-all ${
+                          match.verdict === "EXCLUDED"
+                            ? "border-dashed border-neutral-300 dark:border-neutral-700 bg-neutral-50/50 dark:bg-neutral-900/40 opacity-80"
+                            : ""
+                        }`}
+                      >
+                        <CardContent className="pt-4 space-y-2.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <h4 className="font-semibold text-neutral-900 dark:text-neutral-100 text-sm">
+                                  {match.investor.name}
+                                </h4>
+                                {match.isLeadCandidate && (
+                                  <Badge tone="green">Co-Lead Capable</Badge>
+                                )}
+                                {(() => {
+                                  const notes = `${match.competitorConflictNotes || ""} ${match.conflictingPortfolioCompany || ""}`.toLowerCase();
+                                  const isExplicitNone = notes.includes("no conflict") || notes.includes("not in portfolio") || notes.includes("none");
+                                  if (isExplicitNone) return null;
+                                  if (notes.includes("adjacent") || notes.includes("non-blocking")) {
+                                    return <Badge tone="amber">Adjacent Holding</Badge>;
+                                  }
+                                  if (match.portfolioConflictDetected) {
+                                    return <Badge tone="red">Competitor in Portfolio</Badge>;
+                                  }
+                                  return null;
+                                })()}
+                              </div>
+                              <p className="text-xs text-neutral-600 dark:text-neutral-300 mt-0.5">
+                                {match.rationale}
+                              </p>
                             </div>
-                            <p className="text-xs text-neutral-600 dark:text-neutral-300 mt-0.5">
-                              {match.rationale}
-                            </p>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <Badge tone={match.verdict === "GOOD" ? "green" : match.verdict === "EXCLUDED" ? "neutral" : "blue"}>
+                                {match.verdict}
+                              </Badge>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setSelectedInvestorForEdit(match.investor)}
+                                className="h-5 text-[10px] px-1.5 gap-1 text-neutral-500 hover:text-neutral-900 dark:text-neutral-400"
+                                title="Edit investor parameters & accepted jurisdictions"
+                              >
+                                <Edit3 className="h-2.5 w-2.5" />
+                                Edit
+                              </Button>
+                            </div>
                           </div>
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            <Badge tone={match.verdict === "GOOD" ? "green" : match.verdict === "EXCLUDED" ? "neutral" : "blue"}>
-                              {match.verdict}
-                            </Badge>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => setSelectedInvestorForEdit(match.investor)}
-                              className="h-5 text-[10px] px-1.5 gap-1 text-neutral-500 hover:text-neutral-900 dark:text-neutral-400"
-                              title="Edit investor parameters & accepted jurisdictions"
-                            >
-                              <Edit3 className="h-2.5 w-2.5" />
-                              Edit
-                            </Button>
+                          <div className="flex flex-wrap gap-4 text-[11px] text-neutral-500 pt-1 border-t border-neutral-100 dark:border-neutral-800">
+                            <span>
+                              Check Size: ${((match.investor.minCheckUsd ?? 50000) / 1000).toFixed(0)}k - $
+                              {((match.investor.maxCheckUsd ?? 500000) / 1000).toFixed(0)}k
+                            </span>
+                            <span>Route: {match.investor.applicationRoute}</span>
+                            {match.investor.applicationUrl && (
+                              <a
+                                href={match.investor.applicationUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center gap-1 text-blue-600 hover:underline"
+                              >
+                                Portal <ExternalLink className="h-3 w-3" />
+                              </a>
+                            )}
                           </div>
-                        </div>
-                        <div className="flex flex-wrap gap-4 text-[11px] text-neutral-500 pt-1 border-t border-neutral-100 dark:border-neutral-800">
-                          <span>
-                            Check Size: ${((match.investor.minCheckUsd ?? 50000) / 1000).toFixed(0)}k - $
-                            {((match.investor.maxCheckUsd ?? 500000) / 1000).toFixed(0)}k
-                          </span>
-                          <span>Route: {match.investor.applicationRoute}</span>
-                          {match.investor.applicationUrl && (
-                            <a
-                              href={match.investor.applicationUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="inline-flex items-center gap-1 text-blue-600 hover:underline"
-                            >
-                              Portal <ExternalLink className="h-3 w-3" />
-                            </a>
-                          )}
-                        </div>
-                        <MatchConflictAndAuditDetails match={match} onOpenSnapshot={(u) => setCachedSnapshotUrl(u)} />
-                      </CardContent>
-                    </Card>
-                  ))}
+                          <MatchConflictAndAuditDetails match={match} onOpenSnapshot={(u) => setCachedSnapshotUrl(u)} />
+                        </CardContent>
+                      </Card>
+                    ))
+                  )}
                 </div>
               </div>
 
@@ -1491,6 +1630,11 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                     <Badge tone="purple">Tier 3: Strategic Value</Badge>
                     <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100">
                       Domain Angels &amp; Operators ({tier3Matches.length})
+                      {hideExcluded && rawTier3Matches.length > tier3Matches.length && (
+                        <span className="text-xs font-normal text-neutral-400 ml-1.5">
+                          ({rawTier3Matches.length - tier3Matches.length} excluded hidden)
+                        </span>
+                      )}
                     </h3>
                   </div>
                   <span className="text-xs text-neutral-500">
@@ -1499,43 +1643,67 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                 </div>
 
                 <div className="grid gap-3">
-                  {tier3Matches.map((match) => (
-                    <Card key={match.id}>
-                      <CardContent className="pt-4 space-y-2.5">
-                        <div className="flex items-center justify-between gap-2">
-                          <div>
-                            <h4 className="font-semibold text-neutral-900 dark:text-neutral-100 text-sm">
-                              {match.investor.name}
-                            </h4>
-                            <p className="text-xs text-neutral-600 dark:text-neutral-300 mt-0.5">
-                              {match.rationale}
-                            </p>
+                  {tier3Matches.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-neutral-200 dark:border-neutral-800 p-5 text-center space-y-1 bg-neutral-50/40 dark:bg-neutral-900/20">
+                      <p className="text-xs font-medium text-neutral-600 dark:text-neutral-300">
+                        {rawTier3Matches.length > 0 && hideExcluded
+                          ? `${rawTier3Matches.length} domain angel candidate${rawTier3Matches.length === 1 ? "" : "s"} excluded by gating criteria.`
+                          : "No strategic domain angels found."}
+                      </p>
+                      {rawTier3Matches.length > 0 && hideExcluded && (
+                        <p className="text-[11px] text-neutral-400">
+                          Toggle &quot;Show All&quot; in the filter bar above to review excluded angels.
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    tier3Matches.map((match) => (
+                      <Card
+                        key={match.id}
+                        className={`transition-all ${
+                          match.verdict === "EXCLUDED"
+                            ? "border-dashed border-neutral-300 dark:border-neutral-700 bg-neutral-50/50 dark:bg-neutral-900/40 opacity-80"
+                            : ""
+                        }`}
+                      >
+                        <CardContent className="pt-4 space-y-2.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <div>
+                              <h4 className="font-semibold text-neutral-900 dark:text-neutral-100 text-sm">
+                                {match.investor.name}
+                              </h4>
+                              <p className="text-xs text-neutral-600 dark:text-neutral-300 mt-0.5">
+                                {match.rationale}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <Badge tone={match.verdict === "GOOD" ? "green" : match.verdict === "EXCLUDED" ? "neutral" : "purple"}>
+                                {match.verdict}
+                              </Badge>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setSelectedInvestorForEdit(match.investor)}
+                                className="h-5 text-[10px] px-1.5 gap-1 text-neutral-500 hover:text-neutral-900 dark:text-neutral-400"
+                                title="Edit investor parameters & accepted jurisdictions"
+                              >
+                                <Edit3 className="h-2.5 w-2.5" />
+                                Edit
+                              </Button>
+                            </div>
                           </div>
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            <Badge tone="purple">{match.verdict}</Badge>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => setSelectedInvestorForEdit(match.investor)}
-                              className="h-5 text-[10px] px-1.5 gap-1 text-neutral-500 hover:text-neutral-900 dark:text-neutral-400"
-                              title="Edit investor parameters & accepted jurisdictions"
-                            >
-                              <Edit3 className="h-2.5 w-2.5" />
-                              Edit
-                            </Button>
+                          <div className="flex flex-wrap gap-4 text-[11px] text-neutral-500 pt-1 border-t border-neutral-100 dark:border-neutral-800">
+                            <span>
+                              Ticket: ${((match.investor.minCheckUsd ?? 10000) / 1000).toFixed(0)}k - $
+                              {((match.investor.maxCheckUsd ?? 50000) / 1000).toFixed(0)}k
+                            </span>
+                            <span>No Board Seat Needed</span>
                           </div>
-                        </div>
-                        <div className="flex flex-wrap gap-4 text-[11px] text-neutral-500 pt-1 border-t border-neutral-100 dark:border-neutral-800">
-                          <span>
-                            Ticket: ${((match.investor.minCheckUsd ?? 10000) / 1000).toFixed(0)}k - $
-                            {((match.investor.maxCheckUsd ?? 50000) / 1000).toFixed(0)}k
-                          </span>
-                          <span>No Board Seat Needed</span>
-                        </div>
-                        <MatchConflictAndAuditDetails match={match} onOpenSnapshot={(u) => setCachedSnapshotUrl(u)} />
-                      </CardContent>
-                    </Card>
-                  ))}
+                          <MatchConflictAndAuditDetails match={match} onOpenSnapshot={(u) => setCachedSnapshotUrl(u)} />
+                        </CardContent>
+                      </Card>
+                    ))
+                  )}
                 </div>
               </div>
 
@@ -1546,29 +1714,58 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                     <Badge tone="amber">Tier 4: Acceleration</Badge>
                     <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100">
                       Accelerators &amp; Incubators ({tier4Matches.length})
+                      {hideExcluded && rawTier4Matches.length > tier4Matches.length && (
+                        <span className="text-xs font-normal text-neutral-400 ml-1.5">
+                          ({rawTier4Matches.length - tier4Matches.length} excluded hidden)
+                        </span>
+                      )}
                     </h3>
                   </div>
                 </div>
 
                 <div className="grid gap-3">
-                  {tier4Matches.map((match) => (
-                    <Card key={match.id}>
-                      <CardContent className="pt-4 space-y-2.5">
-                        <div className="flex items-center justify-between gap-2">
-                          <div>
-                            <h4 className="font-semibold text-neutral-900 dark:text-neutral-100 text-sm">
-                              {match.investor.name}
-                            </h4>
-                            <p className="text-xs text-neutral-600 dark:text-neutral-300 mt-0.5">
-                              {match.rationale}
-                            </p>
+                  {tier4Matches.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-neutral-200 dark:border-neutral-800 p-5 text-center space-y-1 bg-neutral-50/40 dark:bg-neutral-900/20">
+                      <p className="text-xs font-medium text-neutral-600 dark:text-neutral-300">
+                        {rawTier4Matches.length > 0 && hideExcluded
+                          ? `${rawTier4Matches.length} accelerator candidate${rawTier4Matches.length === 1 ? "" : "s"} excluded by gating criteria.`
+                          : "No accelerators or incubators matched for this deal."}
+                      </p>
+                      {rawTier4Matches.length > 0 && hideExcluded && (
+                        <p className="text-[11px] text-neutral-400">
+                          Toggle &quot;Show All&quot; in the filter bar above to review excluded programs.
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    tier4Matches.map((match) => (
+                      <Card
+                        key={match.id}
+                        className={`transition-all ${
+                          match.verdict === "EXCLUDED"
+                            ? "border-dashed border-neutral-300 dark:border-neutral-700 bg-neutral-50/50 dark:bg-neutral-900/40 opacity-80"
+                            : ""
+                        }`}
+                      >
+                        <CardContent className="pt-4 space-y-2.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <div>
+                              <h4 className="font-semibold text-neutral-900 dark:text-neutral-100 text-sm">
+                                {match.investor.name}
+                              </h4>
+                              <p className="text-xs text-neutral-600 dark:text-neutral-300 mt-0.5">
+                                {match.rationale}
+                              </p>
+                            </div>
+                            <Badge tone={match.verdict === "GOOD" ? "green" : match.verdict === "EXCLUDED" ? "neutral" : "amber"}>
+                              {match.verdict}
+                            </Badge>
                           </div>
-                          <Badge tone="amber">{match.verdict}</Badge>
-                        </div>
-                        <MatchConflictAndAuditDetails match={match} onOpenSnapshot={(u) => setCachedSnapshotUrl(u)} />
-                      </CardContent>
-                    </Card>
-                  ))}
+                          <MatchConflictAndAuditDetails match={match} onOpenSnapshot={(u) => setCachedSnapshotUrl(u)} />
+                        </CardContent>
+                      </Card>
+                    ))
+                  )}
                 </div>
               </div>
             </div>
