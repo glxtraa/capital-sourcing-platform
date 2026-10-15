@@ -659,6 +659,7 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
     agentFlow: string;
     description: string;
     dslInput: any;
+    agentOutput?: any;
     missingParameters?: MissingParameterInfo[];
   } | null>(null);
 
@@ -2660,13 +2661,14 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                         description:
                           "Synthesizes domain landscape, uncovers direct market rivals, identifies venture backers, and verifies HTTP source URLs.",
                         dslInput: competitorDslPayload,
+                        agentOutput: deal.competitors,
                         missingParameters: competitorMissingParams,
                       })
                     }
                     className="gap-1.5 text-xs text-neutral-700 hover:text-neutral-900 border-neutral-300 dark:border-neutral-700 dark:text-neutral-300"
                   >
                     <FileCode className="h-3.5 w-3.5 text-purple-600" />
-                    Inspect Agent DSL Input
+                    Inspect Agent DSL &amp; Output
                   </Button>
                   <Button
                     size="sm"
@@ -2867,13 +2869,19 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                         description:
                           "Discovers real current executive decision makers and department heads matching the target buyer persona at each prospective client account.",
                         dslInput: contactDslPayload,
+                        agentOutput: allCommercialProspects.flatMap((p) =>
+                          (p.contacts || []).map((c) => ({
+                            ...c,
+                            accountName: p.name,
+                          })),
+                        ),
                         missingParameters: contactMissingParams,
                       })
                     }
                     className="gap-1.5 text-xs text-blue-700 hover:text-blue-900 border-blue-200 dark:border-blue-900/60 dark:text-blue-300"
                   >
                     <FileCode className="h-3.5 w-3.5 text-blue-600" />
-                    Inspect Contact DSL
+                    Inspect Contact DSL &amp; Output
                   </Button>
                   <Button
                     size="sm"
@@ -2885,13 +2893,14 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                         description:
                           "Extracts and validates direct enterprise corporate clients (buyers) and strategic distribution partners based on domain, ICP, and monetization parameters.",
                         dslInput: commercialDslPayload,
+                        agentOutput: deal.commercialProspects,
                         missingParameters: commercialMissingParams,
                       })
                     }
                     className="gap-1.5 text-xs text-neutral-700 hover:text-neutral-900 border-neutral-300 dark:border-neutral-700 dark:text-neutral-300"
                   >
                     <FileCode className="h-3.5 w-3.5 text-emerald-600" />
-                    Inspect Market DSL
+                    Inspect Market DSL &amp; Output
                   </Button>
                   <Button
                     size="sm"
@@ -3588,6 +3597,7 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
           agentFlow={activeDslModal.agentFlow}
           description={activeDslModal.description}
           dslInput={activeDslModal.dslInput}
+          agentOutput={activeDslModal.agentOutput}
           missingParameters={activeDslModal.missingParameters}
           onClose={() => setActiveDslModal(null)}
           onEditParameters={() => {

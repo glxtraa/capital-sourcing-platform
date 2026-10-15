@@ -26,16 +26,21 @@ export async function GET(
       primaryVertical: true,
       industry: true,
       subIndustries: true,
+      targetCustomerProfile: true,
+      businessModel: true,
       legalEntityJurisdiction: true,
     },
   });
 
   const dslInput = {
+    agentFlow: "COMPETITOR_INTELLIGENCE_AND_ANTI_PORTFOLIO_V2",
     companyName: deal?.companyName ?? "",
     stage: deal?.stage ?? "SEED",
     primaryVertical: deal?.primaryVertical ?? "B2B_SAAS",
     industry: deal?.industry ?? "",
     subIndustries: deal?.subIndustries ?? [],
+    targetCustomerProfile: deal?.targetCustomerProfile ?? null,
+    businessModel: deal?.businessModel ?? null,
     jurisdiction: deal?.legalEntityJurisdiction ?? "Delaware (US)",
   };
 
@@ -71,15 +76,29 @@ export async function POST(
     const ask = deal.financingAsks[0];
     const targetRaise = ask?.targetRaiseUsd ? `$${ask.targetRaiseUsd.toLocaleString()}` : "early-stage venture capital";
 
-    const summaryContext =
-      `${deal.companyName} is raising ${targetRaise} on ${ask?.instrumentType ?? "POST_MONEY_SAFE"}. ` +
-      `Data room files: ${deal.documents.map((d) => d.fileName).join(", ") || "Deck and model"}.`;
+    const docSummaries = deal.documents
+      .map((d) => (d.extractedRaw as any)?.documentSummary)
+      .filter(Boolean)
+      .join(" ");
+
+    const summaryContext = [
+      `${deal.companyName} is raising ${targetRaise} on ${ask?.instrumentType ?? "POST_MONEY_SAFE"}.`,
+      docSummaries ? `Document extraction summary: ${docSummaries}` : null,
+      deal.targetCustomerProfile ? `Target ICP / Buyer Persona: ${deal.targetCustomerProfile}` : null,
+      deal.businessModel ? `Monetization & Business Model: ${deal.businessModel}` : null,
+      `Data room files: ${deal.documents.map((d) => d.fileName).join(", ") || "Deck and model"}.`,
+    ]
+      .filter(Boolean)
+      .join("\n");
 
     const result = await researchStartupCompetitors({
       companyName: deal.companyName,
       stage: deal.stage,
       primaryVertical: deal.primaryVertical,
       industryHint: deal.industry || undefined,
+      subIndustries: deal.subIndustries,
+      targetCustomerProfile: deal.targetCustomerProfile || undefined,
+      businessModel: deal.businessModel || undefined,
       descriptionOrDeckSummary: summaryContext,
       jurisdiction: deal.legalEntityJurisdiction,
     });
