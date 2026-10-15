@@ -26,82 +26,90 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  const orgId = await getCurrentOrgId();
-  const body = (await req.json().catch(() => ({}))) ?? {};
+  try {
+    const orgId = await getCurrentOrgId();
+    const body = (await req.json().catch(() => ({}))) ?? {};
 
-  let companyName = "Analyzing Startup Data Room...";
-  if (typeof body?.companyName === "string" && body.companyName.trim()) {
-    companyName = body.companyName.trim();
-  } else if (typeof body?.firstFileName === "string" && body.firstFileName.trim()) {
-    const cleaned = body.firstFileName
-      .replace(/\.(pdf|xlsx|xls|csv|docx|doc|txt)$/i, "")
-      .replace(/[_-]+/g, " ")
-      .replace(/\b(pitch|deck|presentation|model|cap|table|projections|financials|v\d+|\d{4})\b/gi, "")
-      .trim();
-    if (cleaned.length > 1) {
-      companyName = cleaned;
+    let companyName = "Analyzing Startup Data Room...";
+    if (typeof body?.companyName === "string" && body.companyName.trim()) {
+      companyName = body.companyName.trim();
+    } else if (typeof body?.firstFileName === "string" && body.firstFileName.trim()) {
+      const cleaned = body.firstFileName
+        .replace(/\.(pdf|xlsx|xls|csv|docx|doc|txt)$/i, "")
+        .replace(/[_-]+/g, " ")
+        .replace(/\b(pitch|deck|presentation|model|cap|table|projections|financials|v\d+|\d{4})\b/gi, "")
+        .trim();
+      if (cleaned.length > 1) {
+        companyName = cleaned;
+      }
     }
+
+    const stage =
+      body.stage && Object.values(StartupStage).includes(body.stage)
+        ? body.stage
+        : StartupStage.SEED;
+
+    const primaryVertical =
+      body.primaryVertical && Object.values(StartupSector).includes(body.primaryVertical)
+        ? body.primaryVertical
+        : StartupSector.B2B_SAAS;
+
+    const legalEntityJurisdiction =
+      typeof body.legalEntityJurisdiction === "string" && body.legalEntityJurisdiction.trim()
+        ? body.legalEntityJurisdiction.trim()
+        : "Delaware (US)";
+
+    const targetRaiseUsd = typeof body.targetRaiseUsd === "number" && body.targetRaiseUsd > 0
+      ? body.targetRaiseUsd
+      : 1500000;
+
+    const valuationCapUsd = typeof body.valuationCapUsd === "number" && body.valuationCapUsd > 0
+      ? body.valuationCapUsd
+      : null;
+
+    const instrumentType =
+      body.instrumentType && Object.values(StartupInstrumentType).includes(body.instrumentType)
+        ? body.instrumentType
+        : StartupInstrumentType.POST_MONEY_SAFE;
+
+    const deal = await db.startupDeal.create({
+      data: {
+        orgId,
+        companyName,
+        stage,
+        primaryVertical,
+        legalEntityJurisdiction,
+        financingAsks: {
+          create: {
+            targetRaiseUsd,
+            instrumentType,
+            valuationCapUsd,
+            plannedRunwayMonths: typeof body.plannedRunwayMonths === "number" ? body.plannedRunwayMonths : 18,
+          },
+        },
+        capTable: {
+          create: {
+            foundersOwnershipPct: 80,
+            investorOwnershipPct: 10,
+            optionPoolPct: 10,
+            safesNotesOutstandingUsd: 0,
+            hasDeadEquity: false,
+          },
+        },
+      },
+      include: {
+        financingAsks: true,
+        capTable: true,
+        founders: true,
+      },
+    });
+
+    return NextResponse.json(deal, { status: 201 });
+  } catch (err: any) {
+    console.error("Failed to initialize startup deal:", err);
+    return NextResponse.json(
+      { error: err?.message || "Failed to initialize startup deal" },
+      { status: 500 }
+    );
   }
-
-  const stage =
-    body.stage && Object.values(StartupStage).includes(body.stage)
-      ? body.stage
-      : StartupStage.SEED;
-
-  const primaryVertical =
-    body.primaryVertical && Object.values(StartupSector).includes(body.primaryVertical)
-      ? body.primaryVertical
-      : StartupSector.B2B_SAAS;
-
-  const legalEntityJurisdiction =
-    typeof body.legalEntityJurisdiction === "string" && body.legalEntityJurisdiction.trim()
-      ? body.legalEntityJurisdiction.trim()
-      : "Delaware (US)";
-
-  const targetRaiseUsd = typeof body.targetRaiseUsd === "number" && body.targetRaiseUsd > 0
-    ? body.targetRaiseUsd
-    : 1500000;
-
-  const valuationCapUsd = typeof body.valuationCapUsd === "number" && body.valuationCapUsd > 0
-    ? body.valuationCapUsd
-    : null;
-
-  const instrumentType =
-    body.instrumentType && Object.values(StartupInstrumentType).includes(body.instrumentType)
-      ? body.instrumentType
-      : StartupInstrumentType.POST_MONEY_SAFE;
-
-  const deal = await db.startupDeal.create({
-    data: {
-      orgId,
-      companyName: body.companyName.trim(),
-      stage,
-      primaryVertical,
-      legalEntityJurisdiction,
-      financingAsks: {
-        create: {
-          targetRaiseUsd,
-          instrumentType,
-          valuationCapUsd,
-          plannedRunwayMonths: typeof body.plannedRunwayMonths === "number" ? body.plannedRunwayMonths : 18,
-        },
-      },
-      capTable: {
-        create: {
-          foundersOwnershipPct: 80,
-          investorOwnershipPct: 10,
-          optionPoolPct: 10,
-          safesNotesOutstandingUsd: 0,
-          hasDeadEquity: false,
-        },
-      },
-    },
-    include: {
-      financingAsks: true,
-      capTable: true,
-      founders: true,
-    },
-  });
-
-  return NextResponse.json(deal, { status: 201 });
 }
