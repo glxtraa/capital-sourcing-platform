@@ -123,57 +123,6 @@ export const StartupCompetitorExtractionSchema = z.object({
 });
 export type StartupCompetitorExtraction = z.infer<typeof StartupCompetitorExtractionSchema>;
 
-export const CommercialProspectCategorySchema = z.enum([
-  "ENTERPRISE_CUSTOMER",
-  "MIDMARKET_CUSTOMER",
-  "INSTITUTIONAL_BUYER",
-  "SMB_CUSTOMER_SEGMENT",
-  "STRATEGIC_CHANNEL_PARTNER",
-  "INTEGRATION_ALLIANCE",
-  "REGULATORY_REGISTRY_PARTNER",
-  "DATA_OR_SUPPLY_PARTNER",
-]);
-export type CommercialProspectCategory = z.infer<typeof CommercialProspectCategorySchema>;
-
-export const ContactRoleCategorySchema = z.enum([
-  "DECISION_MAKER",
-  "PROCUREMENT_LEAD",
-  "TECHNICAL_EVALUATOR",
-  "CHAMPION",
-]);
-export type ContactRoleCategory = z.infer<typeof ContactRoleCategorySchema>;
-
-export const StartupProspectContactSchema = z.object({
-  fullName: z.string().describe("Real executive or leader name matching the target buyer persona"),
-  title: z.string().describe("Exact executive title at the organization"),
-  roleCategory: ContactRoleCategorySchema.default("DECISION_MAKER"),
-  department: z.string().nullable().optional().describe("Department or division name"),
-  linkedinUrl: z.string().nullable().optional().describe("LinkedIn profile URL"),
-  emailPattern: z.string().nullable().optional().describe("Corporate email pattern or direct route"),
-  location: z.string().nullable().optional().describe("City, State, or Country"),
-  relevanceRationale: z.string().describe("Why this executive is the key decision maker for this offering"),
-  outreachAngle: z.string().describe("Specific personalized hook/icebreaker citing company mandates and value fit"),
-  sourceUrl: z.string().nullable().optional(),
-  sourceVerified: z.boolean().default(false),
-  sourceHttpStatus: z.number().int().nullable().optional(),
-});
-export type StartupProspectContact = z.infer<typeof StartupProspectContactSchema>;
-
-export const StartupCommercialProspectSchema = z.object({
-  name: z.string(),
-  websiteUrl: z.string().nullable().optional(),
-  category: CommercialProspectCategorySchema.default("ENTERPRISE_CUSTOMER"),
-  buyerPersona: z.string().nullable().optional().describe("Target stakeholder title, e.g. 'VP of Infrastructure' or 'Head of Procurement'"),
-  useCaseFit: z.string().describe("Specific pain point this startup solves for them and why they buy or partner"),
-  estimatedAcvTier: z.enum(["UNDER_25K", "25K_TO_100K", "100K_TO_250K", "OVER_250K"]).default("25K_TO_100K"),
-  strategicSynergy: z.string().nullable().optional().describe("GTM acceleration, co-marketing, or platform integration advantage"),
-  sourceUrl: z.string().nullable().optional(),
-  sourceVerified: z.boolean().default(false),
-  sourceHttpStatus: z.number().int().nullable().optional(),
-  contacts: z.array(StartupProspectContactSchema).optional(),
-});
-export type StartupCommercialProspect = z.infer<typeof StartupCommercialProspectSchema>;
-
 export const StartupDocumentExtractionSchema = z.object({
   documentSummary: z.string().describe("1-2 sentences summarizing what this document is"),
   documentTypes: z.array(z.string()).optional().default([]),
@@ -182,10 +131,9 @@ export const StartupDocumentExtractionSchema = z.object({
   primaryVertical: StartupSectorSchema.nullable().optional(),
   industry: z.string().nullable().optional().describe("Specific sub-industry / niche domain description"),
   subIndustries: z.array(z.string()).optional().default([]),
-  legalEntityJurisdiction: z.string().nullable().optional().describe("e.g. Delaware (US), Singapore, UK"),
+  legalEntityJurisdiction: z.string().nullable().optional().describe("e.g. Delaware (US), United Kingdom, Singapore, Hong Kong, Cayman Islands"),
   founders: z.array(FounderExtractionSchema).optional().default([]),
   competitors: z.array(StartupCompetitorExtractionSchema).optional().default([]),
-  commercialProspects: z.array(StartupCommercialProspectSchema).optional().default([]),
   traction: TractionExtractionSchema.nullable().optional(),
   capTable: CapTableExtractionSchema.nullable().optional(),
   financingAsk: AskExtractionSchema.nullable().optional(),
@@ -193,4 +141,3 @@ export const StartupDocumentExtractionSchema = z.object({
   openQuestions: z.array(z.string()).optional().default([]),
 });
 export type StartupDocumentExtraction = z.infer<typeof StartupDocumentExtractionSchema>;
-

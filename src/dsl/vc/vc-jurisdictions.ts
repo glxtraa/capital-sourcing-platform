@@ -9,6 +9,7 @@ export const VC_STANDARD_JURISDICTIONS = [
   "Delaware (US)",
   "United Kingdom",
   "Singapore",
+  "Hong Kong",
   "Cayman Islands",
   "Canada",
   "Germany",
@@ -62,6 +63,15 @@ export const VC_JURISDICTION_TAXONOMY: JurisdictionDetail[] = [
     region: "APAC",
     aliases: ["singapore", "sg", "pte ltd", "southeast asia", "sea"],
     notes: "The premier cross-border holding jurisdiction for Southeast Asia and Indo-Pacific ventures.",
+  },
+  {
+    id: "hong-kong",
+    name: "Hong Kong",
+    corporateForm: "Hong Kong Private Company Limited by Shares (Ltd)",
+    standardInstrument: "Hong Kong SAFE / Seed Preferred Equity",
+    region: "APAC",
+    aliases: ["hong kong", "hk", "hongkong", "hksar", "greater bay area", "apac"],
+    notes: "Premier international venture hub and financial gateway operating under English common law. Recognized by global and APAC funds.",
   },
   {
     id: "cayman",

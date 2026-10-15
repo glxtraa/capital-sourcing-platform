@@ -32,7 +32,7 @@ For the target investor or query hint, discover and verify:
    - `targetOwnershipPct`: Target equity ownership (e.g. 10-20%).
 
 6. **Geographic & Legal Constraints**:
-   - `acceptedJurisdictions`: e.g. Delaware C-Corp only, UK Ltd, Singapore Pte Ltd, Global.
+   - `acceptedJurisdictions`: e.g. Delaware C-Corp only, UK Ltd, Singapore Pte Ltd, Hong Kong, Global.
    - `minArrUsd`: Minimum revenue threshold (or 0 for pre-revenue).
 
 7. **Application & Access Route**:

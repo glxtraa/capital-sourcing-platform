@@ -15,7 +15,7 @@ Read the document for what it actually is, not what you expect it to be.
 - `companyName`: Legal or brand name.
 - `stage`: Current round stage (`PRE_SEED`, `SEED`, `SERIES_A`, `SERIES_B`, `GROWTH`).
 - `primaryVertical`: Primary vertical classification (`B2B_SAAS`, `FINTECH`, `AI_ML_INFRASTRUCTURE`, `GENERATIVE_AI_APPS`, `CLIMATETECH`, `HEALTHTECH_BIOTECH`, `DEV_TOOLS`, `CYBERSECURITY`, `MARKETPLACE_PLATFORM`, `HARDWARE_ROBOTICS`, `WEB3_CRYPTO`, `CONSUMER`).
-- `legalEntityJurisdiction`: e.g. "Delaware (US)", "Singapore", "United Kingdom", "Cayman Islands".
+- `legalEntityJurisdiction`: e.g. "Delaware (US)", "United Kingdom", "Singapore", "Hong Kong", "Cayman Islands".
 
 ### 3. Founders & Team
 - For each founder:

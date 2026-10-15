@@ -9,8 +9,23 @@ import type {
 
 function matchesJurisdiction(acceptedList: string[], target: string | null): boolean {
   if (!target) return true;
-  if (acceptedList.some((j) => j.toLowerCase() === "any")) return true;
-  return acceptedList.some((j) => j.toLowerCase().includes(target.toLowerCase()));
+  const t = target.toLowerCase().replace(/[_-]/g, " ").trim();
+  if (acceptedList.some((j) => {
+    const norm = j.toLowerCase().replace(/[_-]/g, " ").trim();
+    return norm === "any" || norm === "global" || norm === "all";
+  })) {
+    return true;
+  }
+  const hkTerms = ["hong kong", "hk", "hongkong", "hksar"];
+  const sgTerms = ["singapore", "sg"];
+  return acceptedList.some((j) => {
+    const item = j.toLowerCase().replace(/[_-]/g, " ").trim();
+    if (item === t) return true;
+    if (item.includes(t) || t.includes(item)) return true;
+    if (hkTerms.some((u) => t.includes(u)) && hkTerms.some((u) => item.includes(u))) return true;
+    if (sgTerms.some((u) => t.includes(u)) && sgTerms.some((u) => item.includes(u))) return true;
+    return false;
+  });
 }
 
 function matchesCommodity(

@@ -22,6 +22,7 @@ function matchesJurisdiction(acceptedList: string[], target: string | null): boo
   const ukTerms = ["london", "uk", "united kingdom", "england", "great britain", "gb", "europe"];
   const usTerms = ["delaware", "us", "usa", "united states", "california", "new york", "san francisco", "bay area"];
   const sgTerms = ["singapore", "sg", "southeast asia", "sea"];
+  const hkTerms = ["hong kong", "hk", "hongkong", "hksar", "greater bay area", "apac"];
 
   return acceptedList.some((j) => {
     const item = j.toLowerCase().replace(/[_-]/g, " ").trim();
@@ -30,6 +31,7 @@ function matchesJurisdiction(acceptedList: string[], target: string | null): boo
     if (ukTerms.some((u) => t.includes(u)) && ukTerms.some((u) => item.includes(u))) return true;
     if (usTerms.some((u) => t.includes(u)) && usTerms.some((u) => item.includes(u))) return true;
     if (sgTerms.some((u) => t.includes(u)) && sgTerms.some((u) => item.includes(u))) return true;
+    if (hkTerms.some((u) => t.includes(u)) && hkTerms.some((u) => item.includes(u))) return true;
     return false;
   });
 }
