@@ -9,15 +9,22 @@ import type {
 
 function matchesJurisdiction(acceptedList: string[], target: string | null): boolean {
   if (!target) return true;
-  const t = target.toLowerCase().trim();
-  if (acceptedList.some((j) => j.toLowerCase() === "any" || j.toLowerCase() === "global")) return true;
+  const t = target.toLowerCase().replace(/[_-]/g, " ").trim();
+  if (
+    acceptedList.some((j) => {
+      const norm = j.toLowerCase().replace(/[_-]/g, " ").trim();
+      return norm === "any" || norm === "global" || norm === "any / global" || norm === "any global" || norm === "all";
+    })
+  ) {
+    return true;
+  }
 
-  const ukTerms = ["london", "uk", "united kingdom", "england", "great britain", "europe"];
+  const ukTerms = ["london", "uk", "united kingdom", "england", "great britain", "gb", "europe"];
   const usTerms = ["delaware", "us", "usa", "united states", "california", "new york", "san francisco", "bay area"];
   const sgTerms = ["singapore", "sg", "southeast asia", "sea"];
 
   return acceptedList.some((j) => {
-    const item = j.toLowerCase().trim();
+    const item = j.toLowerCase().replace(/[_-]/g, " ").trim();
     if (item === t) return true;
     if (item.includes(t) || t.includes(item)) return true;
     if (ukTerms.some((u) => t.includes(u)) && ukTerms.some((u) => item.includes(u))) return true;
@@ -149,19 +156,51 @@ export function matchStartupDeal(
     const compInvestments = (Array.isArray(inv.competitorInvestments)
       ? inv.competitorInvestments
       : []) as CompInv[];
+    // Only genuine conflicts:
+    // Exclude anything explicitly marked "NONE" or with notes stating "no conflict" / "not in portfolio"
+    const isExplicitNoConflict = (ci: CompInv) => {
+      if (ci.conflictSeverity === "NONE") return true;
+      const n = (ci.notes || "").toLowerCase();
+      const name = (ci.competitorName || "").toLowerCase();
+      if (n.includes("no conflict") || n.includes("not in portfolio") || n.includes("none")) return true;
+      if (name.includes("no conflict") || name.includes("none")) return true;
+      return false;
+    };
+
     const directCompetitorInvestment = compInvestments.find(
       (ci) =>
-        ci.conflictSeverity === "DIRECT_CONFLICT" ||
-        (spec.competitors || []).some(
-          (c) => c.name.toLowerCase().trim() === ci.competitorName?.toLowerCase().trim(),
-        ),
+        !isExplicitNoConflict(ci) &&
+        (ci.conflictSeverity === "DIRECT_CONFLICT" ||
+          (spec.competitors || []).some(
+            (c) =>
+              c.name.toLowerCase().trim() === ci.competitorName?.toLowerCase().trim() &&
+              c.overlapDegree === "DIRECT",
+          )),
     );
 
-    const conflictingCompany =
+    const adjacentCompetitorInvestment = compInvestments.find(
+      (ci) =>
+        !isExplicitNoConflict(ci) &&
+        !directCompetitorInvestment &&
+        (ci.conflictSeverity === "ADJACENT_COMPETITOR" ||
+          (spec.competitors || []).some(
+            (c) => c.name.toLowerCase().trim() === ci.competitorName?.toLowerCase().trim(),
+          )),
+    );
+
+    const rawConflictingCompany =
       selfCompanyConflict ??
       rivalFromPortfolio?.name ??
-      rivalBackedByThisInvestor?.name ??
+      (rivalBackedByThisInvestor?.overlapDegree === "DIRECT" ? rivalBackedByThisInvestor?.name : null) ??
       directCompetitorInvestment?.competitorName;
+
+    // Filter out if conflictingCompany itself contains "no conflict" or "none"
+    const conflictingCompany =
+      rawConflictingCompany &&
+      !rawConflictingCompany.toLowerCase().includes("no conflict") &&
+      !rawConflictingCompany.toLowerCase().includes("none")
+        ? rawConflictingCompany
+        : null;
 
     const portfolioConflict = Boolean(conflictingCompany);
 
@@ -170,14 +209,18 @@ export function matchStartupDeal(
       if (directCompetitorInvestment?.notes) {
         competitorConflictNotes = directCompetitorInvestment.notes;
       } else if (rivalBackedByThisInvestor) {
-        competitorConflictNotes = `Investor is a confirmed backer of competitor ${rivalBackedByThisInvestor.name} (${rivalBackedByThisInvestor.overlapDegree} rival).`;
+        competitorConflictNotes = `Investor is a confirmed backer of direct competitor ${rivalBackedByThisInvestor.name}.`;
       } else if (rivalFromPortfolio) {
         competitorConflictNotes = `Investor's active portfolio contains direct competitor ${rivalFromPortfolio.name}.`;
       } else if (selfCompanyConflict) {
         competitorConflictNotes = `Direct portfolio conflict with existing investment in ${selfCompanyConflict}.`;
       } else {
-        competitorConflictNotes = `Portfolio conflict detected with rival firm ${conflictingCompany}.`;
+        competitorConflictNotes = `Direct portfolio conflict detected with competitor ${conflictingCompany}.`;
       }
+    } else if (adjacentCompetitorInvestment) {
+      competitorConflictNotes =
+        adjacentCompetitorInvestment.notes ||
+        `Holds investment in adjacent market company ${adjacentCompetitorInvestment.competitorName} (Non-blocking).`;
     }
 
     const missingDocs = inv.documentsRequired
@@ -232,6 +275,17 @@ export function matchStartupDeal(
       });
     }
 
+    if (adjacentCompetitorInvestment && !portfolioConflict) {
+      criteria.push({
+        key: "adjacentCompetitor",
+        label: "Adjacent Market Investment",
+        status: "warning",
+        detail:
+          adjacentCompetitorInvestment.notes ||
+          `Holds investment in adjacent company ${adjacentCompetitorInvestment.competitorName} (Non-blocking).`,
+      });
+    }
+
     if (portfolioConflict) {
       criteria.push({
         key: "portfolioConflict",
@@ -278,9 +332,11 @@ export function matchStartupDeal(
 
     // Check for commercial customer and partner portfolio synergies
     const partnerSynergies: string[] = [];
-    if (Array.isArray(spec.commercialProspects) && Array.isArray(inv.portfolioCompanies)) {
-      for (const prospect of spec.commercialProspects) {
-        const pName = prospect.name.toLowerCase().trim();
+    const prospects = (spec as any).commercialProspects;
+    if (Array.isArray(prospects) && Array.isArray(inv.portfolioCompanies)) {
+      for (const prospect of prospects) {
+        const pName = (prospect?.name || "").toLowerCase().trim();
+        if (!pName) continue;
         const found = inv.portfolioCompanies.find((c) => {
           const cName = c.toLowerCase().trim();
           return cName === pName || cName.includes(pName) || pName.includes(cName);

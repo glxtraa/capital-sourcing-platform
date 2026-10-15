@@ -5,9 +5,11 @@ import { useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle, Badge, Button } from "@/components/ui/primitives";
 import { VcUploadDropzone } from "@/components/VcUploadDropzone";
 import {
+  AlertCircle,
   AlertTriangle,
   Building2,
   CheckCircle2,
+  ChevronDown,
   Clock,
   DollarSign,
   Edit3,
@@ -16,7 +18,9 @@ import {
   FileSpreadsheet,
   FileText,
   Globe,
+  Info,
   Layers,
+  Lock,
   Mail,
   MapPin,
   PieChart,
@@ -186,10 +190,67 @@ function MatchConflictAndAuditDetails({
   const keyContacts = Array.isArray(investor.keyContactsJson) ? investor.keyContactsJson : [];
   const hasContacts = investor.contactEmail || investor.headquarters || investor.websiteUrl || keyContacts.length > 0;
 
+  // Conflict classification
+  const conflictNotes = (match.competitorConflictNotes || "").trim();
+  const conflictingCompany = (match.conflictingPortfolioCompany || "").trim();
+  const conflictCombined = `${conflictNotes} ${conflictingCompany}`.toLowerCase();
+
+  const isExplicitNoConflict =
+    conflictCombined.includes("no conflict") ||
+    conflictCombined.includes("not in portfolio") ||
+    conflictCombined.includes("none");
+
+  const isAdjacentConflict =
+    !isExplicitNoConflict &&
+    (conflictCombined.includes("adjacent") ||
+      conflictCombined.includes("non-blocking") ||
+      conflictCombined.includes("minor overlap"));
+
+  const isGenuineConflict =
+    Boolean(match.portfolioConflictDetected) &&
+    !isExplicitNoConflict &&
+    !isAdjacentConflict;
+
+  // Link audit categorization:
+  // 1. activeLinks: HTTP 200/300 verified
+  // 2. protectedProfiles: LinkedIn or Twitter/X bot challenges (e.g. 999) which are valid profiles
+  // 3. unverifiedCitations: 404, DNS error, timeout - moved into Diligence Warnings section
+  const activeLinks: any[] = [];
+  const protectedProfiles: any[] = [];
+  const unverifiedCitations: any[] = [];
+
+  for (const link of auditLinks) {
+    let host = link.url || "";
+    try {
+      host = new URL(link.url).hostname.replace("www.", "");
+    } catch {}
+
+    const isSocialOrBotProtected =
+      link.status === 999 ||
+      link.url?.includes("linkedin.com") ||
+      link.url?.includes("x.com") ||
+      link.url?.includes("twitter.com") ||
+      host.includes("linkedin") ||
+      host.includes("twitter");
+
+    if (link.ok || (link.status >= 200 && link.status < 400)) {
+      activeLinks.push({ ...link, host });
+    } else if (isSocialOrBotProtected && link.status === 999) {
+      protectedProfiles.push({ ...link, host });
+    } else {
+      unverifiedCitations.push({ ...link, host });
+    }
+  }
+
+  const hasGatingFactor = Boolean(investor.gatingFactor);
+  const hasAdjacentHolding = isAdjacentConflict;
+  const hasUnverifiedCitations = unverifiedCitations.length > 0;
+  const hasCaveats = hasGatingFactor || hasAdjacentHolding || hasUnverifiedCitations;
+
   return (
     <div className="space-y-2 pt-1">
-      {/* Portfolio Conflict Banner */}
-      {match.portfolioConflictDetected && (
+      {/* Portfolio Conflict Banner (Only shown for genuine direct conflicts) */}
+      {isGenuineConflict && (
         <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50/90 p-2.5 text-xs text-red-900 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-200">
           <ShieldAlert className="h-4 w-4 shrink-0 text-red-600 mt-0.5" />
           <div className="flex-1">
@@ -200,6 +261,58 @@ function MatchConflictAndAuditDetails({
             </span>
           </div>
         </div>
+      )}
+
+      {/* Non-Critical Diligence Warnings & Mandate Caveats (Collapsible) */}
+      {hasCaveats && (
+        <details className="group rounded-md border border-amber-200/90 bg-amber-50/40 dark:border-amber-900/50 dark:bg-amber-950/20 text-xs">
+          <summary className="flex items-center justify-between px-2.5 py-1.5 cursor-pointer font-medium text-amber-900 dark:text-amber-200 hover:bg-amber-100/50 dark:hover:bg-amber-950/40 select-none transition-colors">
+            <div className="flex items-center gap-1.5">
+              <AlertTriangle className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+              <span className="font-semibold text-[11px]">Diligence Warnings &amp; Mandate Caveats</span>
+              <span className="rounded-full bg-amber-200/80 dark:bg-amber-900/70 px-1.5 py-0.2 text-[10px] font-mono text-amber-800 dark:text-amber-300">
+                {[hasGatingFactor, hasAdjacentHolding, hasUnverifiedCitations].filter(Boolean).length}
+              </span>
+            </div>
+            <ChevronDown className="h-3.5 w-3.5 text-amber-600 transition-transform group-open:rotate-180" />
+          </summary>
+          <div className="px-3 py-2 border-t border-amber-200/60 dark:border-amber-900/40 space-y-2 text-[11px] text-amber-900 dark:text-amber-200">
+            {hasGatingFactor && (
+              <div className="flex items-start gap-1.5">
+                <Info className="h-3 w-3 shrink-0 text-amber-600 mt-0.5" />
+                <div>
+                  <span className="font-semibold">Fund Gating Mandate: </span>
+                  <span>{investor.gatingFactor}</span>
+                </div>
+              </div>
+            )}
+            {hasAdjacentHolding && (
+              <div className="flex items-start gap-1.5">
+                <AlertCircle className="h-3 w-3 shrink-0 text-amber-600 mt-0.5" />
+                <div>
+                  <span className="font-semibold">Adjacent Market Investment: </span>
+                  <span>
+                    {match.competitorConflictNotes ||
+                      `Holds investment in adjacent company (non-blocking portfolio overlap).`}
+                  </span>
+                </div>
+              </div>
+            )}
+            {hasUnverifiedCitations && (
+              <div className="flex items-start gap-1.5">
+                <Globe className="h-3 w-3 shrink-0 text-amber-600 mt-0.5" />
+                <div>
+                  <span className="font-semibold">Secondary Citations Not Live: </span>
+                  <span className="text-neutral-600 dark:text-neutral-400">
+                    {unverifiedCitations
+                      .map((c) => `${c.host} (${c.status || "ERR"})`)
+                      .join(", ")} — primary verified portal remains active.
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        </details>
       )}
 
       {/* Industry Deployment Status Tag */}
@@ -319,53 +432,70 @@ function MatchConflictAndAuditDetails({
         </div>
       )}
 
-      {/* Verified Source Links Audit */}
-      {auditLinks.length > 0 && (
+      {/* Audited Source Links */}
+      {(activeLinks.length > 0 || protectedProfiles.length > 0) && (
         <div className="pt-1.5 border-t border-neutral-100 dark:border-neutral-800 text-[11px] space-y-1">
           <div className="flex items-center justify-between text-neutral-500">
             <span className="font-medium text-[10px] uppercase tracking-wider">
-              Re-Verified HTTP Source Citations:
+              Audited Source Citations:
             </span>
             <span className="font-mono text-[10px]">
-              {auditLinks.filter((l: any) => l.ok).length}/{auditLinks.length} Links Active
+              {activeLinks.length + protectedProfiles.length}/{auditLinks.length} Active Citations
             </span>
           </div>
           <div className="flex flex-wrap gap-1.5">
-            {auditLinks.slice(0, 4).map((link: any, idx: number) => {
-              let host = link.url;
-              try {
-                host = new URL(link.url).hostname.replace("www.", "");
-              } catch {}
-              return (
-                <div key={idx} className="inline-flex items-center gap-1">
-                  <a
-                    href={link.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono border transition-all ${
-                      link.ok
-                        ? "bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800"
-                        : "bg-red-50 text-red-800 border-red-200 hover:bg-red-100 dark:bg-red-950/40 dark:text-red-300 dark:border-red-800"
-                    }`}
+            {activeLinks.slice(0, 4).map((link: any, idx: number) => (
+              <div key={`act-${idx}`} className="inline-flex items-center gap-1">
+                <a
+                  href={link.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono border transition-all bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800"
+                >
+                  <span className="font-bold">✓ {link.status || 200}</span>
+                  <span className="truncate max-w-[120px]">{link.host}</span>
+                  <ExternalLink className="h-2.5 w-2.5 opacity-60" />
+                </a>
+                {onOpenSnapshot && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenSnapshot(link.url)}
+                    className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-mono border border-neutral-200 bg-neutral-50 text-neutral-600 hover:text-emerald-700 hover:bg-emerald-50 hover:border-emerald-200 dark:bg-neutral-800 dark:text-neutral-400 dark:border-neutral-700 dark:hover:text-emerald-300 transition-colors cursor-pointer"
+                    title="View cached audit snapshot of cited page"
                   >
-                    <span className="font-bold">{link.ok ? `✓ ${link.status || 200}` : `✗ ${link.status || "ERR"}`}</span>
-                    <span className="truncate max-w-[120px]">{host}</span>
-                    <ExternalLink className="h-2.5 w-2.5 opacity-60" />
-                  </a>
-                  {onOpenSnapshot && (
-                    <button
-                      type="button"
-                      onClick={() => onOpenSnapshot(link.url)}
-                      className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-mono border border-neutral-200 bg-neutral-50 text-neutral-600 hover:text-emerald-700 hover:bg-emerald-50 hover:border-emerald-200 dark:bg-neutral-800 dark:text-neutral-400 dark:border-neutral-700 dark:hover:text-emerald-300 transition-colors cursor-pointer"
-                      title="View cached audit snapshot of cited page"
-                    >
-                      <FileText className="h-2.5 w-2.5 text-emerald-600" />
-                      <span>Cached</span>
-                    </button>
-                  )}
-                </div>
-              );
-            })}
+                    <FileText className="h-2.5 w-2.5 text-emerald-600" />
+                    <span>Cached</span>
+                  </button>
+                )}
+              </div>
+            ))}
+
+            {protectedProfiles.slice(0, 3).map((link: any, idx: number) => (
+              <div key={`prot-${idx}`} className="inline-flex items-center gap-1">
+                <a
+                  href={link.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono border transition-all bg-neutral-50 text-neutral-700 border-neutral-200 hover:bg-neutral-100 dark:bg-neutral-800 dark:text-neutral-300 dark:border-neutral-700"
+                  title="Protected Profile (Anti-bot protected)"
+                >
+                  <Lock className="h-2.5 w-2.5 text-neutral-500" />
+                  <span className="truncate max-w-[120px]">{link.host}</span>
+                  <ExternalLink className="h-2.5 w-2.5 opacity-60" />
+                </a>
+                {onOpenSnapshot && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenSnapshot(link.url)}
+                    className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-mono border border-neutral-200 bg-neutral-50 text-neutral-600 hover:text-emerald-700 hover:bg-emerald-50 hover:border-emerald-200 dark:bg-neutral-800 dark:text-neutral-400 dark:border-neutral-700 transition-colors cursor-pointer"
+                    title="View cached snapshot of cited page"
+                  >
+                    <FileText className="h-2.5 w-2.5 text-emerald-600" />
+                    <span>Cached</span>
+                  </button>
+                )}
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -949,9 +1079,18 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                               {match.isLeadCandidate && (
                                 <Badge tone="green">Primary Lead Candidate</Badge>
                               )}
-                              {match.portfolioConflictDetected && (
-                                <Badge tone="red">Competitor in Portfolio</Badge>
-                              )}
+                              {(() => {
+                                const notes = `${match.competitorConflictNotes || ""} ${match.conflictingPortfolioCompany || ""}`.toLowerCase();
+                                const isExplicitNone = notes.includes("no conflict") || notes.includes("not in portfolio") || notes.includes("none");
+                                if (isExplicitNone) return null;
+                                if (notes.includes("adjacent") || notes.includes("non-blocking")) {
+                                  return <Badge tone="amber">Adjacent Portfolio Holding</Badge>;
+                                }
+                                if (match.portfolioConflictDetected) {
+                                  return <Badge tone="red">Competitor in Portfolio</Badge>;
+                                }
+                                return null;
+                              })()}
                               <Badge tone="blue">{match.investor.type.replaceAll("_", " ")}</Badge>
                               <Button
                                 variant="outline"
@@ -1046,15 +1185,34 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                       <CardContent className="pt-4 space-y-2.5">
                         <div className="flex items-center justify-between gap-2">
                           <div>
-                            <h4 className="font-semibold text-neutral-900 dark:text-neutral-100 text-sm">
-                              {match.investor.name}
-                            </h4>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <h4 className="font-semibold text-neutral-900 dark:text-neutral-100 text-sm">
+                                {match.investor.name}
+                              </h4>
+                              {match.isLeadCandidate && (
+                                <Badge tone="green">Co-Lead Capable</Badge>
+                              )}
+                              {(() => {
+                                const notes = `${match.competitorConflictNotes || ""} ${match.conflictingPortfolioCompany || ""}`.toLowerCase();
+                                const isExplicitNone = notes.includes("no conflict") || notes.includes("not in portfolio") || notes.includes("none");
+                                if (isExplicitNone) return null;
+                                if (notes.includes("adjacent") || notes.includes("non-blocking")) {
+                                  return <Badge tone="amber">Adjacent Holding</Badge>;
+                                }
+                                if (match.portfolioConflictDetected) {
+                                  return <Badge tone="red">Competitor in Portfolio</Badge>;
+                                }
+                                return null;
+                              })()}
+                            </div>
                             <p className="text-xs text-neutral-600 dark:text-neutral-300 mt-0.5">
                               {match.rationale}
                             </p>
                           </div>
                           <div className="flex items-center gap-1.5 shrink-0">
-                            <Badge tone="blue">{match.verdict}</Badge>
+                            <Badge tone={match.verdict === "GOOD" ? "green" : match.verdict === "EXCLUDED" ? "neutral" : "blue"}>
+                              {match.verdict}
+                            </Badge>
                             <Button
                               variant="outline"
                               size="sm"
