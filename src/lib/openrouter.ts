@@ -75,11 +75,11 @@ export const BENCHMARK_MODEL = process.env.OPENROUTER_BENCHMARK_MODEL ?? "qwen/q
  * the cost is trivial (a 10-page contract costs $0.02). Set
  * OPENROUTER_PDF_ENGINE=cloudflare-ai to use the free engine instead.
  */
-export function pdfParserPlugin() {
+export function pdfParserPlugin(engineOverride?: string) {
   return [
     {
       id: "file-parser",
-      pdf: { engine: process.env.OPENROUTER_PDF_ENGINE ?? "mistral-ocr" },
+      pdf: { engine: engineOverride ?? process.env.OPENROUTER_PDF_ENGINE ?? "mistral-ocr" },
     },
   ] as const;
 }

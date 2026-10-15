@@ -17,17 +17,49 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Link href="/deals" className="text-sm font-semibold tracking-tight">
               Capital Sourcing Platform
             </Link>
-            <nav className="flex gap-4 text-sm text-neutral-600 dark:text-neutral-400">
-              <Link href="/deals" className="hover:text-neutral-900 dark:hover:text-neutral-100">
-                Deals
+            <nav className="flex items-center gap-2 text-sm">
+              <div className="flex items-center rounded-lg bg-neutral-100 p-1 dark:bg-neutral-800">
+                <Link
+                  href="/deals"
+                  className="rounded-md px-3 py-1 font-medium text-neutral-700 hover:text-neutral-900 hover:bg-white dark:text-neutral-300 dark:hover:text-white dark:hover:bg-neutral-700 transition-all"
+                >
+                  Invoice Deals
+                </Link>
+                <Link
+                  href="/trade-deals"
+                  className="rounded-md px-3 py-1 font-medium text-neutral-700 hover:text-neutral-900 hover:bg-white dark:text-neutral-300 dark:hover:text-white dark:hover:bg-neutral-700 transition-all"
+                >
+                  Trade Deals
+                </Link>
+                <Link
+                  href="/vc-deals"
+                  className="rounded-md bg-emerald-600 px-3 py-1 font-semibold text-white shadow-xs hover:bg-emerald-700 transition-all"
+                >
+                  VC Deals (New)
+                </Link>
+              </div>
+
+              <div className="h-4 w-[1px] bg-neutral-200 dark:bg-neutral-800 mx-2" />
+
+              <Link href="/providers" className="text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100">
+                Invoice Providers
               </Link>
-              <Link href="/providers" className="hover:text-neutral-900 dark:hover:text-neutral-100">
-                Providers
+              <Link
+                href="/trade-funders"
+                className="text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100"
+              >
+                Trade Funders
               </Link>
-              <Link href="/research" className="hover:text-neutral-900 dark:hover:text-neutral-100">
+              <Link
+                href="/vc-investors"
+                className="text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100"
+              >
+                VC Investors
+              </Link>
+              <Link href="/research" className="text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100">
                 Research
               </Link>
-              <Link href="/export" className="hover:text-neutral-900 dark:hover:text-neutral-100">
+              <Link href="/export" className="text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100">
                 Export
               </Link>
             </nav>

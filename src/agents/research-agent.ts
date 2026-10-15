@@ -2,7 +2,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import type { ChatCompletionCreateParamsNonStreaming } from "openai/resources/chat/completions";
 import { getOpenRouterClient, RESEARCH_MODEL, webSearchPlugin } from "@/lib/openrouter";
-import { zodToResponseFormat } from "@/lib/json-schema";
+import { zodToResponseFormat, parseStructuredJson } from "@/lib/json-schema";
 import { ProviderSchema, type ProviderDTO } from "@/dsl/provider-schema";
 
 const SYSTEM_PROMPT = readFileSync(join(process.cwd(), "src/agents/prompts/research.md"), "utf-8");
@@ -117,5 +117,5 @@ export async function structureProviderFindings(
   if (!content) {
     throw new Error(`Research agent failed to structure findings for "${providerNameOrHint}".`);
   }
-  return ProviderSchema.parse(JSON.parse(content));
+  return parseStructuredJson(content, ProviderSchema);
 }

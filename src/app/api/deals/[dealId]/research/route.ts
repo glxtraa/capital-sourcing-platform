@@ -24,7 +24,7 @@ import { researchProviderFindings, structureProviderFindings } from "@/agents/re
  * migration for a temporary scratch value; they only ever feed a prompt for
  * a provider record the same signed-in user is already allowed to add.
  */
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 const BodySchema = z.discriminatedUnion("step", [
   z.object({ step: z.literal("search") }),

@@ -414,3 +414,517 @@ model AppSetting {
   value     String
   updatedAt DateTime @updatedAt
 }
+
+// ---------------------------------------------------------------------------
+// Parallel Trade Finance Models
+// ---------------------------------------------------------------------------
+
+enum TradeDealStatus {
+  UPLOADING
+  EXTRACTING
+  RECONCILING
+  DIAGNOSING
+  READY_TO_MATCH
+  MATCHING
+  RESEARCHING
+  BENCHMARKING
+  COMPLETE
+  ARCHIVED
+}
+
+enum TradeCorridorEnum {
+  IDN_COAL_ASIA
+  SEA_AGRI_GLOBAL
+  LATAM_SEAFOOD_ASIA
+  OTHER_CROSS_BORDER
+}
+
+model TradeDeal {
+  id              String            @id @default(cuid())
+  orgId           String
+  name            String
+  corridor        TradeCorridorEnum @default(OTHER_CROSS_BORDER)
+  status          TradeDealStatus   @default(UPLOADING)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  parties         TradeParty[]
+  contractLegs    ContractLeg[]
+  financingAsks   TradeFinancingAskModel[]
+  riskFlags       TradeRiskFlag[]
+  documents       UploadedTradeDocument[]
+  matches         TradeFunderMatchModel[]
+  termSheets      TradeTermSheetModel[]
+  researchRuns    TradeResearchRun[]
+}
+
+model TradeParty {
+  id                        String    @id @default(cuid())
+  dealId                    String
+  deal                      TradeDeal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  role                      String    // "SUPPLIER" | "TRADER" | "BUYER"
+  legalName                 String
+  jurisdiction              String?
+  concessionOrLicenseId     String?
+  concessionVerified        Boolean   @default(false)
+  bankName                  String?
+  swiftBic                  String?
+  createdAt                 DateTime  @default(now())
+}
+
+model ContractLeg {
+  id                   String    @id @default(cuid())
+  dealId               String
+  deal                 TradeDeal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  legType              String    // "SUPPLY_LEG" | "OFFTAKE_LEG"
+  contractReference    String
+  sellerName           String
+  buyerName            String
+  incoterm             String
+  port                 String
+  paymentType          String
+  tenorDays            Int
+  amountUsd            Float
+  commodityName        String
+  quantity             Float
+  unit                 String
+  unitPrice            Float
+  createdAt            DateTime  @default(now())
+}
+
+model TradeFinancingAskModel {
+  id                String    @id @default(cuid())
+  dealId            String
+  deal              TradeDeal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  isUmbrella        Boolean   @default(false)
+  leg               String?   // "SUPPLIER_LEG" | "TRADER_LEG" | "BUYER_LEG"
+  targetEntityName  String
+  instrument        String
+  amountUsd         Float
+  advanceRatePct    Float
+  tenorDaysMin      Int
+  tenorDaysMax      Int
+  collateralSummary String?
+  createdAt         DateTime  @default(now())
+}
+
+model TradeRiskFlag {
+  id          String    @id @default(cuid())
+  dealId      String
+  deal        TradeDeal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  category    String
+  severity    Int       // 1 - 5
+  description String
+  resolved    Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+}
+
+model UploadedTradeDocument {
+  id          String    @id @default(cuid())
+  dealId      String
+  deal        TradeDeal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  fileName    String
+  blobUrl     String
+  mimeType    String
+  sizeBytes   Int
+  tradeLeg    String?
+  documentTypes String[] @default([])
+  extractedRaw  Json?
+  uploadedAt  DateTime  @default(now())
+}
+
+model TradeFunder {
+  id                          String    @id // stable slug e.g. "bni-trade-desk"
+  name                        String
+  type                        String
+  offersUmbrellaFacility      Boolean   @default(false)
+  supportedLegs               String[]
+  supportedCorridors          String[]
+  supportedCommodities        String[]
+  excludedCommodities         String[]
+  acceptedSupplierJurisdictions String[]
+  acceptedTraderJurisdictions String[]
+  acceptedBuyerJurisdictions   String[]
+  minTicketUsd                Float?
+  maxTicketUsd                Float?
+  indicativePricingGuidance   String?
+  gatingFactor                String?
+  confidence                  String    @default("UNVERIFIED_NEEDS_CHECK")
+  lastVerified                DateTime?
+  sources                     String[]
+  notes                       String?
+  contact                     String?
+  applicationUrl              String?
+  rateEvidenceSnippet         String?
+  pricingProvenance           Json?
+  deskContacts                Json?
+  documentsRequired           TradeFunderDocumentRequirement[]
+  matches                     TradeFunderMatchModel[]
+  createdAt                   DateTime  @default(now())
+  updatedAt                   DateTime  @updatedAt
+}
+
+model TradeFunderDocumentRequirement {
+  id          String      @id @default(cuid())
+  funderId    String
+  funder      TradeFunder @relation(fields: [funderId], references: [id], onDelete: Cascade)
+  code        String
+  note        String?
+}
+
+model TradeFunderMatchModel {
+  id          String      @id @default(cuid())
+  dealId      String
+  deal        TradeDeal   @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  funderId    String
+  funder      TradeFunder @relation(fields: [funderId], references: [id], onDelete: Cascade)
+  isUmbrella  Boolean     @default(false)
+  verdict     String
+  rationale   String
+  isTier1     Boolean     @default(false)
+  createdAt   DateTime    @default(now())
+
+  @@unique([dealId, funderId])
+}
+
+model TradeTermSheetModel {
+  id              String    @id @default(cuid())
+  dealId          String
+  deal            TradeDeal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  facilityType    String    // "UMBRELLA" | "MODULAR_SYNDICATE"
+  leadFunderName  String
+  facilityLimitUsd Float
+  blendedPricing  Float
+  pricingFormula  String
+  advanceRatePct  Float
+  tenorDaysMax    Int
+  securityTerms   Json      // string array
+  conditionsPrecedent Json  // string array
+  benchmarkTableJson Json
+  createdAt       DateTime  @default(now())
+}
+
+model TradeResearchRun {
+  id          String    @id @default(cuid())
+  dealId      String?
+  deal        TradeDeal? @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  triggeredBy String
+  status      String    @default("RUNNING")
+  inputSummary String?
+  outputSummary String?
+  startedAt   DateTime  @default(now())
+  finishedAt  DateTime?
+}
+
+// ---------------------------------------------------------------------------
+// Parallel Startup VC Funding Models
+// ---------------------------------------------------------------------------
+
+enum StartupDealStatus {
+  UPLOADING
+  EXTRACTING
+  RECONCILING
+  READY_TO_MATCH
+  MATCHING
+  RESEARCHING
+  BENCHMARKING
+  COMPLETE
+  ARCHIVED
+}
+
+enum StartupStage {
+  PRE_SEED
+  SEED
+  SERIES_A
+  SERIES_B
+  GROWTH
+}
+
+enum StartupSector {
+  B2B_SAAS
+  FINTECH
+  AI_ML_INFRASTRUCTURE
+  GENERATIVE_AI_APPS
+  CLIMATETECH
+  HEALTHTECH_BIOTECH
+  DEV_TOOLS
+  CYBERSECURITY
+  MARKETPLACE_PLATFORM
+  HARDWARE_ROBOTICS
+  WEB3_CRYPTO
+  CONSUMER
+}
+
+enum StartupInstrumentType {
+  POST_MONEY_SAFE
+  PRE_MONEY_SAFE
+  CONVERTIBLE_NOTE
+  PRICED_PREFERRED_EQUITY
+  ACCELERATOR_STANDARD_TERMS
+}
+
+enum StartupInvestorType {
+  INSTITUTIONAL_VC
+  ANGEL_OPERATOR
+  ANGEL_PLATFORM_SYNDICATE
+  VC_PLATFORM_SCOUT
+  ACCELERATOR_INCUBATOR
+}
+
+model StartupDeal {
+  id                        String              @id @default(cuid())
+  orgId                     String
+  companyName               String
+  stage                     StartupStage        @default(SEED)
+  primaryVertical           StartupSector       @default(B2B_SAAS)
+  industry                  String?             // e.g. "Cross-Border Trade Infrastructure & B2B Payments"
+  subIndustries             String[]            @default([])
+  targetCustomerProfile     String?
+  businessModel             String?
+  legalEntityJurisdiction   String              @default("Delaware (US)")
+  status                    StartupDealStatus   @default(UPLOADING)
+  createdAt                 DateTime            @default(now())
+  updatedAt                 DateTime            @updatedAt
+
+  founders                  StartupFounder[]
+  capTable                  StartupCapTable?
+  financingAsks             StartupFinancingAsk[]
+  riskFlags                 StartupRiskFlag[]
+  competitors               StartupCompetitor[]
+  commercialProspects       StartupCommercialProspect[]
+  documents                 UploadedStartupDocument[]
+  matches                   StartupInvestorMatch[]
+  syndicateBlueprints       StartupSyndicateBlueprint[]
+  researchRuns              StartupResearchRun[]
+}
+
+model StartupCommercialProspect {
+  id                        String       @id @default(cuid())
+  dealId                    String
+  deal                      StartupDeal  @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  name                      String
+  websiteUrl                String?
+  category                  String       @default("ENTERPRISE_CUSTOMER") // ENTERPRISE_CUSTOMER | SMB_CUSTOMER_SEGMENT | STRATEGIC_CHANNEL_PARTNER | INTEGRATION_ALLIANCE | DATA_OR_SUPPLY_PARTNER
+  buyerPersona              String?
+  useCaseFit                String
+  estimatedAcvTier          String       @default("25K_TO_100K")
+  strategicSynergy          String?
+  sourceUrl                 String?
+  sourceVerified            Boolean      @default(false)
+  sourceHttpStatus          Int?
+  lastVerified              DateTime?
+  createdAt                 DateTime     @default(now())
+  updatedAt                 DateTime     @updatedAt
+
+  @@index([dealId])
+}
+
+model StartupCompetitor {
+  id                        String       @id @default(cuid())
+  dealId                    String
+  deal                      StartupDeal  @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  name                      String
+  websiteUrl                String?
+  description               String
+  overlapDegree             String       @default("DIRECT") // "DIRECT" | "INDIRECT" | "ADJACENT"
+  knownInvestors            String[]     @default([])
+  differentiation           String?
+  sourceUrl                 String?
+  sourceVerified            Boolean      @default(false)
+  sourceHttpStatus          Int?
+  lastVerified              DateTime?
+  createdAt                 DateTime     @default(now())
+  updatedAt                 DateTime     @updatedAt
+}
+
+
+model StartupFounder {
+  id                        String       @id @default(cuid())
+  dealId                    String
+  deal                      StartupDeal  @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  name                      String
+  role                      String       // "CEO", "CTO", "COO", "Founder"
+  isTechnical               Boolean      @default(false)
+  isRepeatFounder           Boolean      @default(false)
+  equityOwnershipPct        Float
+  vestingConfirmed          Boolean      @default(true)
+  linkedinUrl               String?
+  priorExits                String[]     @default([])
+  createdAt                 DateTime     @default(now())
+}
+
+model StartupCapTable {
+  id                        String       @id @default(cuid())
+  dealId                    String       @unique
+  deal                      StartupDeal  @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  foundersOwnershipPct      Float
+  investorOwnershipPct      Float
+  optionPoolPct             Float
+  safesNotesOutstandingUsd  Float        @default(0)
+  safeHoldersJson           Json?
+  commonHoldersJson         Json?
+  hasDeadEquity             Boolean      @default(false)
+  deadEquityNotes           String?
+  createdAt                 DateTime     @default(now())
+  updatedAt                 DateTime     @updatedAt
+}
+
+model StartupFinancingAsk {
+  id                        String                 @id @default(cuid())
+  dealId                    String
+  deal                      StartupDeal            @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  targetRaiseUsd            Float
+  instrumentType            StartupInstrumentType  @default(POST_MONEY_SAFE)
+  valuationCapUsd           Float?
+  discountPct               Float?
+  plannedRunwayMonths       Int                    @default(18)
+  leadCommitted             Boolean                @default(false)
+  committedAmountUsd        Float                  @default(0)
+  useOfProceedsJson         Json?
+  createdAt                 DateTime               @default(now())
+}
+
+model StartupRiskFlag {
+  id                        String       @id @default(cuid())
+  dealId                    String
+  deal                      StartupDeal  @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  category                  String
+  severity                  Int          // 1 - 5
+  description               String
+  resolved                  Boolean      @default(false)
+  createdAt                 DateTime     @default(now())
+}
+
+model UploadedStartupDocument {
+  id                        String       @id @default(cuid())
+  dealId                    String
+  deal                      StartupDeal  @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  fileName                  String
+  blobUrl                   String
+  mimeType                  String
+  sizeBytes                 Int
+  documentTypes             String[]     @default([])
+  extractedRaw              Json?
+  uploadedAt                DateTime     @default(now())
+}
+
+model StartupInvestor {
+  id                        String              @id // stable slug e.g. "sequoia-seed"
+  name                      String
+  type                      StartupInvestorType
+  targetStages              StartupStage[]
+  preferredSectors          StartupSector[]
+  excludedSectors           StartupSector[]     @default([])
+  minCheckUsd               Float?
+  maxCheckUsd               Float?
+  sweetSpotCheckUsd         Float?
+  leadsRounds               Boolean             @default(false)
+  takesBoardSeats           Boolean             @default(false)
+  targetOwnershipPct        Float?
+  acceptedJurisdictions     String[]            @default(["Delaware (US)", "any"])
+  minArrUsd                 Float?
+  portfolioCompanies        String[]            @default([])
+  activelyFundingIndustry   Boolean             @default(true)
+  recentIndustryInvestments Json?               // Array of { companyName, dealYear, roundStage, sector, sourceUrl, verified }
+  competitorInvestments     Json?               // Array of { competitorName, roundStage, conflictSeverity, notes, sourceUrl, verified }
+  thesisMatchSummary        String?
+  sourceLinksAudit          Json?               // Array of { url, status, ok, latencyMs, testedAt }
+  gatingFactor              String?
+  typicalTurnaroundWeeks    Int?
+  applicationRoute          String              @default("WARM_INTRO") // "OPEN_PORTAL", "SCOUT_FORM", "WARM_INTRO", "ACCELERATOR_COHORT"
+  applicationUrl            String?
+  confidence                String              @default("VERIFIED_SECONDARY")
+  sources                   String[]            @default([])
+  notes                     String?
+  contactEmail              String?
+  headquarters              String?
+  websiteUrl                String?
+  keyContactsJson           Json?               // Array of { name, role, email, linkedinUrl, twitterUrl, verified }
+  lastVerified              DateTime?
+  createdAt                 DateTime            @default(now())
+  updatedAt                 DateTime            @updatedAt
+
+  documentsRequired         StartupInvestorDocumentRequirement[]
+  matches                   StartupInvestorMatch[]
+}
+
+model StartupInvestorDocumentRequirement {
+  id                        String          @id @default(cuid())
+  investorId                String
+  investor                  StartupInvestor @relation(fields: [investorId], references: [id], onDelete: Cascade)
+  code                      String
+  note                      String?
+}
+
+model StartupInvestorMatch {
+  id                          String          @id @default(cuid())
+  dealId                      String
+  deal                        StartupDeal     @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  investorId                  String
+  investor                    StartupInvestor @relation(fields: [investorId], references: [id], onDelete: Cascade)
+  tier                        String          // "TIER_1_LEAD" | "TIER_2_SYNDICATE" | "TIER_3_ANGEL" | "TIER_4_ACCELERATOR"
+  verdict                     String          // "GOOD" | "POSSIBLE" | "POOR" | "EXCLUDED"
+  rationale                   String
+  isLeadCandidate             Boolean         @default(false)
+  thesisResonanceScore        Float?
+  portfolioConflictDetected   Boolean         @default(false)
+  conflictingPortfolioCompany String?
+  activelyFundingIndustry     Boolean         @default(true)
+  industryDeploymentScore     Float?          @default(85)
+  competitorConflictNotes     String?
+  sourceLinksAudit            Json?
+  createdAt                   DateTime        @default(now())
+
+  @@unique([dealId, investorId])
+}
+
+model StartupSyndicateBlueprint {
+  id                        String       @id @default(cuid())
+  dealId                    String
+  deal                      StartupDeal  @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  targetRaiseUsd            Float
+  leadAllocationUsd         Float
+  syndicateAllocationUsd    Float
+  angelAllocationUsd        Float
+  recommendedValuationCapUsd Float?
+  dilutionModelJson         Json
+  synthesisSummary          String
+  createdAt                 DateTime     @default(now())
+}
+
+model StartupResearchRun {
+  id                        String       @id @default(cuid())
+  dealId                    String?
+  deal                      StartupDeal? @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  triggeredBy               String
+  status                    String       @default("RUNNING")
+  inputSummary              String?
+  outputSummary             String?
+  startedAt                 DateTime     @default(now())
+  finishedAt                DateTime?
+}
+
+// ---------------------------------------------------------------------------
+// Research Page Cache — stores verified snapshots of web pages cited during
+// VC, Trade, and Invoice provider research for unassailable auditability.
+// ---------------------------------------------------------------------------
+
+model ResearchPageCache {
+  id             String    @id @default(cuid())
+  url            String    @unique
+  normalizedUrl  String
+  title          String?
+  content        String    @db.Text
+  snippet        String?   @db.Text
+  httpStatus     Int       @default(200)
+  contentType    String?
+  byteSize       Int       @default(0)
+  headersJson    Json?
+  fetchLatencyMs Int       @default(0)
+  cachedAt       DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([normalizedUrl])
+  @@index([cachedAt])
+}
+

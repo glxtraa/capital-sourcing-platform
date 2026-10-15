@@ -47,3 +47,7 @@ an informal note — read it for what it actually is, not what you expect it to 
 - **Bilingual/multi-jurisdiction documents**: where a document states which language version
   controls in case of conflict, extract that as a note but read whichever language you can
   understand fully — don't skip content because part of it is in an unfamiliar script.
+- **Output format**: You MUST respond with ONLY a single valid JSON object conforming to the
+  `DocumentExtraction` schema (`documentSummary`, `parties`, `financingAsks`, `riskFlags`,
+  `documentTypes`, `openQuestions`). Never output Markdown headings (like `## Extracted...`),
+  prose, or code fences — start your response with `{` and end with `}`.

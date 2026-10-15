@@ -29,22 +29,27 @@ export function DealActions({ dealId, status, hasMatches }: { dealId: string; st
         deal.documents ?? [];
       if (documents.length === 0) throw new Error("No documents uploaded yet.");
 
-      // Skip documents already extracted with a document-type classification
-      // on file -- makes this safe to re-run after a partial failure without
-      // redoing already-successful (and billed) work, while still picking up
-      // anything that's never been processed OR was processed before
-      // documentTypes existed (empty array either way).
-      const pendingDocs = documents.filter((d) => d.extractedFieldsRaw == null || d.documentTypes.length === 0);
-      for (let i = 0; i < pendingDocs.length; i++) {
-        setProgressLabel(`Extracting ${pendingDocs[i].fileName} (${i + 1}/${pendingDocs.length})…`);
-        const res = await fetch(`/api/deals/${dealId}/documents/${pendingDocs[i].id}/extract`, { method: "POST" });
+      // If some documents have never been extracted yet, extract the missing
+      // ones first; if all documents have already been extracted, re-run
+      // extraction across ALL documents (the server route merges new
+      // datapoints with existing ones and appends to the extraction history
+      // log without losing previous datapoints).
+      const unextractedDocs = documents.filter((d) => d.extractedFieldsRaw == null || d.documentTypes.length === 0);
+      const docsToExtract = unextractedDocs.length > 0 ? unextractedDocs : documents;
+      const isRerun = unextractedDocs.length === 0;
+
+      for (let i = 0; i < docsToExtract.length; i++) {
+        setProgressLabel(
+          `${isRerun ? "Re-extracting" : "Extracting"} ${docsToExtract[i].fileName} (${i + 1}/${docsToExtract.length})…`,
+        );
+        const res = await fetch(`/api/deals/${dealId}/documents/${docsToExtract[i].id}/extract`, { method: "POST" });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
-          throw new Error(body.error ?? `Extraction failed for ${pendingDocs[i].fileName}.`);
+          throw new Error(body.error ?? `Extraction failed for ${docsToExtract[i].fileName}.`);
         }
       }
 
-      setProgressLabel("Finalizing deal spec…");
+      setProgressLabel("Finalizing & merging deal spec…");
       const finalizeRes = await fetch(`/api/deals/${dealId}/extract`, { method: "POST" });
       if (!finalizeRes.ok) {
         const body = await finalizeRes.json().catch(() => ({}));

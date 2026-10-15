@@ -1,11 +1,12 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 import type {
+  ChatCompletion,
   ChatCompletionCreateParamsNonStreaming,
   ChatCompletionMessageParam,
 } from "openai/resources/chat/completions";
 import { getOpenRouterClient, EXTRACTION_MODEL, pdfParserPlugin } from "@/lib/openrouter";
-import { zodToResponseFormat } from "@/lib/json-schema";
+import { zodToResponseFormat, parseStructuredJson } from "@/lib/json-schema";
 import { DocumentExtractionSchema, STANDARD_DOCUMENT_TAXONOMY, type DocumentExtraction } from "@/dsl/schema";
 
 const SYSTEM_PROMPT = readFileSync(
@@ -55,7 +56,9 @@ export async function extractFromDocument(
           content: [
             {
               type: "text",
-              text: `Document filename: ${fileName}\n\nExtract this document per the system prompt.\n\n${TAXONOMY_HINT}`,
+              text:
+                `Document filename: ${fileName}\n\nExtract this document per the system prompt. ` +
+                `Respond ONLY with a single valid JSON object matching the DocumentExtraction schema.\n\n${TAXONOMY_HINT}`,
             },
             {
               type: "file",
@@ -68,26 +71,65 @@ export async function extractFromDocument(
         }
       : {
           role: "user",
-          content: `Document filename: ${fileName}\n\nExtract this document per the system prompt.\n\n${TAXONOMY_HINT}\n\n${fileBuffer.toString("utf-8")}`,
+          content:
+            `Document filename: ${fileName}\n\nExtract this document per the system prompt. ` +
+            `Respond ONLY with a single valid JSON object matching the DocumentExtraction schema.\n\n${TAXONOMY_HINT}\n\n${fileBuffer.toString("utf-8")}`,
         }
   ) as ChatCompletionMessageParam;
 
-  const params: ChatCompletionCreateParamsNonStreaming & { plugins?: readonly unknown[] } = {
-    model: EXTRACTION_MODEL,
-    response_format: RESPONSE_FORMAT,
-    messages: [{ role: "system", content: SYSTEM_PROMPT }, userMessage],
-    ...(isPdf ? { plugins: pdfParserPlugin() } : {}),
-  };
+  // OpenRouter's shared mistral-ocr pool occasionally returns HTTP 400/429
+  // "Failed to parse the file: The document parsing engine is currently rate
+  // limited. Please retry shortly." when extracting multiple PDFs in a row.
+  // Additionally, some OpenRouter sub-providers for open-weight models may
+  // emit Markdown (`## Extracted...`) instead of strict JSON when combined
+  // with the `file-parser` plugin. We:
+  //   1. Pass `provider: { require_parameters: true }` so OpenRouter only
+  //      routes to providers that enforce `response_format` (`json_schema`).
+  //   2. Validate the JSON inside the retry loop; if a model returns non-JSON
+  //      or rate-limits, retry and fall back to `google/gemini-2.5-flash` +
+  //      `cloudflare-ai` on the later attempts so extraction always succeeds.
+  const configuredEngine = process.env.OPENROUTER_PDF_ENGINE ?? "mistral-ocr";
+  const attempts: { model: string; pdfEngine?: string; delayBeforeMs: number }[] = [
+    { model: EXTRACTION_MODEL, pdfEngine: configuredEngine, delayBeforeMs: 0 },
+    { model: EXTRACTION_MODEL, pdfEngine: configuredEngine, delayBeforeMs: 3000 },
+    { model: "google/gemini-2.5-flash", pdfEngine: configuredEngine, delayBeforeMs: 5000 },
+    { model: "google/gemini-2.5-flash", pdfEngine: "cloudflare-ai", delayBeforeMs: 6000 },
+  ];
 
-  const response = await client.chat.completions.create(params);
+  let lastError: unknown;
 
-  const content = response.choices[0]?.message?.content;
-  if (!content) {
-    throw new Error(`Extraction agent returned no content for ${fileName}. Raw response: ${JSON.stringify(response)}`);
+  for (let attemptIdx = 0; attemptIdx < attempts.length; attemptIdx++) {
+    const { model, pdfEngine, delayBeforeMs } = attempts[attemptIdx];
+    if (delayBeforeMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delayBeforeMs));
+    }
+
+    const params: ChatCompletionCreateParamsNonStreaming & {
+      plugins?: readonly unknown[];
+      provider?: { require_parameters?: boolean };
+    } = {
+      model,
+      temperature: 0,
+      response_format: RESPONSE_FORMAT,
+      messages: [{ role: "system", content: SYSTEM_PROMPT }, userMessage],
+      provider: { require_parameters: true },
+      ...(isPdf ? { plugins: pdfParserPlugin(pdfEngine) } : {}),
+    };
+
+    try {
+      const response: ChatCompletion = await client.chat.completions.create(params);
+      const content = response.choices[0]?.message?.content;
+      if (!content) {
+        throw new Error(`Extraction agent returned no content for ${fileName}. Raw response: ${JSON.stringify(response)}`);
+      }
+      return parseStructuredJson(content, DocumentExtractionSchema);
+    } catch (err) {
+      lastError = err;
+      if (attemptIdx === attempts.length - 1) {
+        throw err;
+      }
+    }
   }
 
-  // Validate before returning — never trust the model's JSON blindly, even
-  // in strict json_schema mode. This is the same "never fabricate/never
-  // trust without validation" discipline the manual skills enforce.
-  return DocumentExtractionSchema.parse(JSON.parse(content));
+  throw lastError ?? new Error(`Extraction failed for ${fileName}`);
 }
