@@ -50,7 +50,7 @@ export const SafeHolderExtractionSchema = z.object({
   id: z.string().optional(),
   holderName: z.string().describe("Investor, fund, angel, or accelerator name holding the SAFE/note"),
   investmentAmountUsd: z.number().describe("Investment principal / SAFE balance in USD"),
-  instrumentType: z.string().default("POST_MONEY_SAFE").describe("e.g. POST_MONEY_SAFE, PRE_MONEY_SAFE, CONVERTIBLE_NOTE, MFN_SAFE"),
+  instrumentType: z.string().optional().default("SAFE").describe("e.g. POST_MONEY_SAFE, PRE_MONEY_SAFE, CONVERTIBLE_NOTE, MFN_SAFE, SAFE"),
   valuationCapUsd: z.number().nullable().optional().describe("Valuation cap in USD if applicable"),
   discountPct: z.number().nullable().optional().describe("Discount percentage e.g. 20"),
   dateOrNotes: z.string().nullable().optional().describe("Date issued or key note"),
@@ -89,17 +89,21 @@ export const TractionExtractionSchema = z.object({
   activeCustomersCount: z.number().int().nullable().optional(),
   customerLoiPipelineUsd: z.number().nullable().optional(),
   netRevenueRetentionPct: z.number().nullable().optional(),
+  verbatimQuote: z.string().nullable().optional(),
+  pageOrSheet: z.string().nullable().optional(),
 });
 export type TractionExtraction = z.infer<typeof TractionExtractionSchema>;
 
 export const AskExtractionSchema = z.object({
   targetRaiseUsd: z.number().nullable().optional(),
-  instrumentType: StartupInstrumentSchema.default("POST_MONEY_SAFE"),
+  instrumentType: StartupInstrumentSchema.nullable().optional(),
   valuationCapUsd: z.number().nullable().optional(),
   discountPct: z.number().nullable().optional(),
-  plannedRunwayMonths: z.number().int().default(18),
+  plannedRunwayMonths: z.number().int().nullable().optional(),
   leadCommitted: z.boolean().default(false),
   committedAmountUsd: z.number().default(0),
+  verbatimQuote: z.string().nullable().optional(),
+  pageOrSheet: z.string().nullable().optional(),
 });
 export type AskExtraction = z.infer<typeof AskExtractionSchema>;
 
@@ -107,6 +111,8 @@ export const RiskFlagExtractionSchema = z.object({
   category: z.string(),
   severity: z.number().int().min(1).max(5),
   description: z.string(),
+  sourceFileName: z.string().nullable().optional(),
+  evidenceSnippet: z.string().nullable().optional(),
 });
 export type RiskFlagExtraction = z.infer<typeof RiskFlagExtractionSchema>;
 
@@ -185,7 +191,7 @@ export const StartupDocumentExtractionSchema = z.object({
   legalEntityJurisdiction: z.string().nullable().optional().describe("e.g. Delaware (US), United Kingdom, Singapore, Hong Kong, Cayman Islands"),
   founders: z.array(FounderExtractionSchema).optional().default([]),
   competitors: z.array(StartupCompetitorExtractionSchema).optional().default([]),
-  commercialProspects: z.array(StartupCommercialProspectSchema).optional().default([]),
+  commercialProspects: z.array(StartupCommercialProspectSchema).optional(),
   traction: TractionExtractionSchema.nullable().optional(),
   capTable: CapTableExtractionSchema.nullable().optional(),
   financingAsk: AskExtractionSchema.nullable().optional(),

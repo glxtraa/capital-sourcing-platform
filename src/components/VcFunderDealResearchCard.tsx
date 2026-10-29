@@ -18,7 +18,7 @@ export function VcFunderDealResearchCard({
   companyName: string;
   stage: string;
   vertical: string;
-  jurisdiction: string;
+  jurisdiction: string | null;
   defaultHint?: string;
   onResearchComplete?: () => void;
 }) {
@@ -31,7 +31,7 @@ export function VcFunderDealResearchCard({
 
   const calculatedDefaultHint =
     defaultHint ||
-    `Early-stage venture capital fund or angel syndicate for a ${stage.replaceAll("_", " ")} ${vertical.replaceAll("_", " ")} startup domiciled in ${jurisdiction}`;
+    `Early-stage venture capital fund or angel syndicate for a ${stage.replaceAll("_", " ")} ${vertical.replaceAll("_", " ")} startup domiciled in ${jurisdiction || "Global"}`;
 
   async function handleDealResearch(e?: React.FormEvent) {
     if (e) e.preventDefault();
@@ -142,7 +142,7 @@ export function VcFunderDealResearchCard({
       <CardContent className="space-y-3 pt-0">
         <p className="text-xs text-neutral-600 dark:text-neutral-400 leading-relaxed">
           Target a specific firm by name (e.g. <em>&quot;Speedinvest&quot;</em>, <em>&quot;Index Ventures seed fund&quot;</em>, <em>&quot;Balderton Capital&quot;</em>, <em>&quot;Tiny VC&quot;</em>)
-          or describe funder criteria for <strong>{companyName}</strong> ({stage.replaceAll("_", " ")} · {vertical.replaceAll("_", " ")} · {jurisdiction}).
+          or describe funder criteria for <strong>{companyName}</strong> ({stage.replaceAll("_", " ")} · {vertical.replaceAll("_", " ")}{jurisdiction ? ` · ${jurisdiction}` : ""}).
         </p>
 
         <form onSubmit={handleDealResearch} className="space-y-2.5">

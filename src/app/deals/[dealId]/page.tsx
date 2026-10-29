@@ -42,7 +42,14 @@ export default async function DealDetailPage({ params }: { params: Promise<{ dea
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <DealActions dealId={deal.id} status={deal.status} hasMatches={deal.providerMatches.length > 0} />
+          <DealActions
+            dealId={deal.id}
+            status={deal.status}
+            hasMatches={deal.providerMatches.length > 0}
+            hasDocs={deal.documents.length > 0}
+            hasExtracted={deal.parties.length > 0 || deal.financingAsks.length > 0}
+            hasBenchmark={deal.termSheets.length > 0}
+          />
           <DeleteDealButton dealId={deal.id} dealName={deal.name} variant="outline" redirectOnDelete={true} />
         </div>
       </div>

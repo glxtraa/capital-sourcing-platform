@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/primitives";
-import { X, Loader2, Save, RefreshCw, FileCode, CheckCircle2, AlertCircle } from "lucide-react";
+import { X, Loader2, Save, RefreshCw, FileCode, CheckCircle2, AlertCircle, Copy, Check, Terminal } from "lucide-react";
+import { resolveZodDslDefinition } from "@/dsl/zod-registry";
 
 interface DocumentExtractionModalProps {
   dealId: string;
@@ -32,6 +33,15 @@ export function DocumentExtractionModal({
   const [isReExtracting, setIsReExtracting] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<"json" | "zod">("json");
+  const [copiedZod, setCopiedZod] = useState(false);
+
+  const zodSchemaDef = useMemo(() => {
+    return resolveZodDslDefinition({
+      dealType,
+      dslType: `${dealType.toUpperCase()}_EXTRACTION`,
+    });
+  }, [dealType]);
 
   const extractEndpoint =
     dealType === "vc"
@@ -144,32 +154,107 @@ export function DocumentExtractionModal({
           </button>
         </div>
 
-        <div className="p-6 space-y-4">
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-neutral-500 font-medium">Structured DSL JSON</span>
-            <Button
+        <div className="flex border-b border-neutral-100 bg-neutral-50/50 px-6 pt-2 dark:border-neutral-800 dark:bg-neutral-900/50">
+          <div className="flex gap-4 text-xs font-semibold">
+            <button
               type="button"
-              variant="outline"
-              size="sm"
-              disabled={isReExtracting || isSaving}
-              onClick={handleReExtract}
-              className="h-7 text-xs gap-1 border-neutral-300 dark:border-neutral-700"
+              onClick={() => setActiveTab("json")}
+              className={`pb-2.5 px-1 border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 ${
+                activeTab === "json"
+                  ? "border-emerald-600 text-emerald-700 dark:border-emerald-400 dark:text-emerald-300 font-bold"
+                  : "border-transparent text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-200"
+              }`}
             >
-              {isReExtracting ? (
-                <RefreshCw className="h-3 w-3 animate-spin" />
-              ) : (
-                <RefreshCw className="h-3 w-3" />
-              )}
-              Re-run Extraction Now
-            </Button>
+              <FileCode className="h-3.5 w-3.5" />
+              <span>Extracted DSL JSON</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("zod")}
+              className={`pb-2.5 px-1 border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 ${
+                activeTab === "zod"
+                  ? "border-amber-500 text-amber-600 dark:text-amber-400 font-bold"
+                  : "border-transparent text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-200"
+              }`}
+            >
+              <Terminal className="h-3.5 w-3.5 text-amber-500" />
+              <span>Underlying Zod DSL</span>
+              <span className="rounded bg-amber-100 px-1 py-0.2 text-[9px] font-mono font-bold text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                Read-Only
+              </span>
+            </button>
           </div>
+        </div>
 
-          <textarea
-            value={jsonText}
-            onChange={(e) => setJsonText(e.target.value)}
-            rows={18}
-            className="w-full rounded-xl border border-neutral-200 bg-neutral-50 p-3.5 font-mono text-[11px] text-neutral-900 shadow-inner outline-none focus:border-emerald-500 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100"
-          />
+        <div className="p-6 space-y-4">
+          {activeTab === "json" ? (
+            <>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-neutral-500 font-medium">Structured DSL JSON</span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={isReExtracting || isSaving}
+                  onClick={handleReExtract}
+                  className="h-7 text-xs gap-1 border-neutral-300 dark:border-neutral-700"
+                >
+                  {isReExtracting ? (
+                    <RefreshCw className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-3 w-3" />
+                  )}
+                  Re-run Extraction Now
+                </Button>
+              </div>
+
+              <textarea
+                value={jsonText}
+                onChange={(e) => setJsonText(e.target.value)}
+                rows={18}
+                className="w-full rounded-xl border border-neutral-200 bg-neutral-50 p-3.5 font-mono text-[11px] text-neutral-900 shadow-inner outline-none focus:border-emerald-500 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100"
+              />
+            </>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="text-xs font-semibold uppercase tracking-wider text-neutral-700 dark:text-neutral-300 flex items-center gap-2">
+                    <span>{zodSchemaDef.title}</span>
+                    <span className="rounded bg-amber-100 px-1.5 py-0.2 text-[10px] font-mono font-bold text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                      No Editing Privileges
+                    </span>
+                  </h4>
+                  <p className="text-[11px] text-neutral-500 mt-0.5">
+                    {zodSchemaDef.summary}
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={async () => {
+                    await navigator.clipboard.writeText(zodSchemaDef.code);
+                    setCopiedZod(true);
+                    setTimeout(() => setCopiedZod(false), 2000);
+                  }}
+                  className="h-7 text-xs gap-1"
+                >
+                  {copiedZod ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
+                  {copiedZod ? "Copied" : "Copy Zod Schema"}
+                </Button>
+              </div>
+
+              <textarea
+                value={zodSchemaDef.code}
+                readOnly
+                rows={18}
+                className="w-full rounded-xl border border-neutral-200 bg-neutral-100/70 p-3.5 font-mono text-[11px] text-neutral-800 shadow-inner outline-none dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-200"
+              />
+              <p className="text-[10px] text-neutral-500">
+                Authoritative Zod extraction contract enforcing field validation and taint scoring.
+              </p>
+            </div>
+          )}
 
           {notice && (
             <div className="flex items-center gap-2 rounded-lg bg-emerald-50 p-2.5 text-xs text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">

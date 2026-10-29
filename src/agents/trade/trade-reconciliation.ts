@@ -5,37 +5,62 @@ import type {
   TradeLegContract,
   TradeCorridor,
 } from "@/dsl/trade";
+import { resolveDocumentTaint } from "@/dsl/provenance";
 
 export interface ReconciledTradeResult {
   tradeDealSpec: TradeDealSpec | null;
   openQuestions: string[];
-  unresolvedRiskFlags: Array<{ category: string; severity: number; description: string }>;
+  unresolvedRiskFlags: Array<{
+    category: string;
+    severity: number;
+    description: string;
+    sourceFileName?: string | null;
+    evidenceSnippet?: string | null;
+  }>;
   readyForMatching: boolean;
 }
 
 /**
  * Deterministically merges and reconciles multi-document trade extractions.
  *
- * Checks:
- * 1. Paired Contracts: Supply Leg (Supplier -> Trader) vs Offtake Leg (Trader -> Buyer)
- * 2. Quantity & Tolerance Reconciliation
- * 3. Cashflow Gap Analysis (payment tenor differential)
- * 4. Corridor Audits:
- *    - Corridor A (Coal): Verifies IUP-OP link to IUP-OPK permit and LHV presence
- *    - Corridor B (Agri): Verifies RSPO/ISPO certifications
- *    - Corridor C (Seafood): Verifies cold chain datalogs & health certificates
+ * Enforces Taint Tracking precedence: AUDITED_PROOF documents take priority
+ * over UNVERIFIED_CLAIM documents, and any contradiction between an
+ * UNVERIFIED_CLAIM and AUDITED_PROOF emits a TAINTED_CLAIM_CONFLICT risk flag.
  */
 export function reconcileTradeExtractions(
   dealId: string,
   dealName: string,
-  extractions: TradeDocumentExtraction[],
+  extractions: Array<TradeDocumentExtraction & { _taintOverride?: string | null }>,
+  policyMap?: Record<string, "AUDITED_PROOF" | "UNVERIFIED_CLAIM">,
 ): ReconciledTradeResult {
   const openQuestions: string[] = [];
-  const riskFlags: Array<{ category: string; severity: number; description: string }> = [];
+  const riskFlags: Array<{
+    category: string;
+    severity: number;
+    description: string;
+    sourceFileName?: string | null;
+    evidenceSnippet?: string | null;
+  }> = [];
+
+  // Annotate and sort extractions so AUDITED_PROOF comes first when selecting primary contracts/parties
+  const annotated = extractions.map((ext) => ({
+    ext,
+    taint: resolveDocumentTaint(
+      ext.documentTypes,
+      ext._taintOverride ?? ext.extractionProvenance?.taint,
+      policyMap,
+    ),
+    fileName: ext.extractionProvenance?.sourceFileName || "Trade Document",
+  }));
+
+  const sortedExtractions = [...annotated].sort((a, b) => {
+    const score = (t: string) => (t === "AUDITED_PROOF" || t === "HUMAN_VERIFIED" ? 0 : 1);
+    return score(a.taint) - score(b.taint);
+  });
 
   // 1. Identify primary corridor
   const corridorCounts = new Map<TradeCorridor, number>();
-  for (const ext of extractions) {
+  for (const { ext } of sortedExtractions) {
     corridorCounts.set(ext.corridor, (corridorCounts.get(ext.corridor) ?? 0) + 1);
     openQuestions.push(...ext.openQuestions);
     riskFlags.push(...ext.riskFlags);
@@ -49,16 +74,41 @@ export function reconcileTradeExtractions(
     }
   }
 
-  // 2. Identify Paired Contracts
-  const supplyDoc = extractions.find((e) => e.tradeLeg === "SUPPLY_LEG");
-  const offtakeDoc = extractions.find((e) => e.tradeLeg === "OFFTAKE_LEG");
+  // Detect TAINTED_CLAIM_CONFLICT between UNVERIFIED_CLAIM and AUDITED_PROOF on commercial value
+  for (const leg of ["SUPPLY_LEG", "OFFTAKE_LEG"] as const) {
+    const legDocs = annotated.filter((a) => a.ext.tradeLeg === leg);
+    const proofDoc = legDocs.find((a) => a.taint === "AUDITED_PROOF");
+    const claimDoc = legDocs.find((a) => a.taint === "UNVERIFIED_CLAIM");
+    if (
+      proofDoc?.ext.commercialParameters?.totalValueUsd != null &&
+      claimDoc?.ext.commercialParameters?.totalValueUsd != null &&
+      Math.abs(
+        proofDoc.ext.commercialParameters.totalValueUsd -
+          claimDoc.ext.commercialParameters.totalValueUsd,
+      ) > 1000
+    ) {
+      riskFlags.push({
+        category: "TAINTED_CLAIM_CONFLICT",
+        severity: 4,
+        description: `Tainted Claim Conflict on ${leg}: Unverified document "${claimDoc.fileName}" claims value $${claimDoc.ext.commercialParameters.totalValueUsd.toLocaleString()} USD vs Audited Proof "${proofDoc.fileName}" ($${proofDoc.ext.commercialParameters.totalValueUsd.toLocaleString()} USD). Audited Proof value selected.`,
+        sourceFileName: claimDoc.fileName,
+        evidenceSnippet: `Claim (${claimDoc.fileName}): $${claimDoc.ext.commercialParameters.totalValueUsd.toLocaleString()} vs Proof (${proofDoc.fileName}): $${proofDoc.ext.commercialParameters.totalValueUsd.toLocaleString()}`,
+      });
+    }
+  }
 
-  // 3. Extract Core Counterparties with Document Provenance
-  let supplierParty: (typeof extractions[0]["parties"][0] & { provenanceDoc?: string; provenanceTime?: string; provenanceModel?: string }) | undefined;
-  let traderParty: (typeof extractions[0]["parties"][0] & { provenanceDoc?: string; provenanceTime?: string; provenanceModel?: string }) | undefined;
-  let buyerParty: (typeof extractions[0]["parties"][0] & { provenanceDoc?: string; provenanceTime?: string; provenanceModel?: string }) | undefined;
+  // 2. Identify Paired Contracts (preferring AUDITED_PROOF)
+  const supplyEntry = sortedExtractions.find((e) => e.ext.tradeLeg === "SUPPLY_LEG");
+  const offtakeEntry = sortedExtractions.find((e) => e.ext.tradeLeg === "OFFTAKE_LEG");
+  const supplyDoc = supplyEntry?.ext;
+  const offtakeDoc = offtakeEntry?.ext;
 
-  for (const ext of extractions) {
+  // 3. Extract Core Counterparties with Document Provenance & Taint
+  let supplierParty: (typeof extractions[0]["parties"][0] & { provenanceDoc?: string; provenanceTime?: string; provenanceModel?: string; taint?: string }) | undefined;
+  let traderParty: (typeof extractions[0]["parties"][0] & { provenanceDoc?: string; provenanceTime?: string; provenanceModel?: string; taint?: string }) | undefined;
+  let buyerParty: (typeof extractions[0]["parties"][0] & { provenanceDoc?: string; provenanceTime?: string; provenanceModel?: string; taint?: string }) | undefined;
+
+  for (const { ext, taint } of sortedExtractions) {
     for (const p of ext.parties) {
       if (p.role === "SUPPLIER" && !supplierParty) {
         supplierParty = {
@@ -66,6 +116,7 @@ export function reconcileTradeExtractions(
           provenanceDoc: ext.extractionProvenance?.sourceFileName,
           provenanceTime: ext.extractionProvenance?.extractedAt,
           provenanceModel: ext.extractionProvenance?.modelUsed,
+          taint,
         };
       }
       if (p.role === "TRADER" && !traderParty) {
@@ -74,6 +125,7 @@ export function reconcileTradeExtractions(
           provenanceDoc: ext.extractionProvenance?.sourceFileName,
           provenanceTime: ext.extractionProvenance?.extractedAt,
           provenanceModel: ext.extractionProvenance?.modelUsed,
+          taint,
         };
       }
       if (p.role === "BUYER" && !buyerParty) {
@@ -82,6 +134,7 @@ export function reconcileTradeExtractions(
           provenanceDoc: ext.extractionProvenance?.sourceFileName,
           provenanceTime: ext.extractionProvenance?.extractedAt,
           provenanceModel: ext.extractionProvenance?.modelUsed,
+          taint,
         };
       }
     }
@@ -95,6 +148,7 @@ export function reconcileTradeExtractions(
     concessionOrLicenseNumber: supplierParty?.permitOrLicenseId ?? null,
     licenseVerified: Boolean(supplierParty?.permitOrLicenseId),
     sourceDocument: supplierParty?.provenanceDoc ?? supplyDoc?.extractionProvenance?.sourceFileName ?? null,
+    taint: supplierParty?.taint ?? supplyEntry?.taint ?? "UNVERIFIED_CLAIM",
     extractionTimestamp: supplierParty?.provenanceTime ?? supplyDoc?.extractionProvenance?.extractedAt ?? null,
     modelUsed: supplierParty?.provenanceModel ?? supplyDoc?.extractionProvenance?.modelUsed ?? null,
   };
@@ -107,6 +161,7 @@ export function reconcileTradeExtractions(
     concessionOrLicenseNumber: traderParty?.permitOrLicenseId ?? null,
     licenseVerified: Boolean(traderParty?.permitOrLicenseId),
     sourceDocument: traderParty?.provenanceDoc ?? supplyDoc?.extractionProvenance?.sourceFileName ?? null,
+    taint: traderParty?.taint ?? supplyEntry?.taint ?? "UNVERIFIED_CLAIM",
     extractionTimestamp: traderParty?.provenanceTime ?? supplyDoc?.extractionProvenance?.extractedAt ?? null,
     modelUsed: traderParty?.provenanceModel ?? supplyDoc?.extractionProvenance?.modelUsed ?? null,
   };
@@ -119,31 +174,34 @@ export function reconcileTradeExtractions(
     concessionOrLicenseNumber: buyerParty?.permitOrLicenseId ?? null,
     licenseVerified: true,
     sourceDocument: buyerParty?.provenanceDoc ?? offtakeDoc?.extractionProvenance?.sourceFileName ?? null,
+    taint: buyerParty?.taint ?? offtakeEntry?.taint ?? "UNVERIFIED_CLAIM",
     extractionTimestamp: buyerParty?.provenanceTime ?? offtakeDoc?.extractionProvenance?.extractedAt ?? null,
     modelUsed: buyerParty?.provenanceModel ?? offtakeDoc?.extractionProvenance?.modelUsed ?? null,
   };
 
-  // 4. Reconcile Paired Contract Terms with Provenance
+  // 4. Reconcile Paired Contract Terms with Provenance & Taint
   const supplyContract: TradeLegContract = {
     contractReference: "SUPPLY-LEG-01",
-    incoterm: supplyDoc?.commercialParameters?.incoterm ?? "FOB",
-    port: supplyDoc?.commercialParameters?.loadingPortOrTerminal ?? "Loading Port TBD",
-    paymentType: supplyDoc?.commercialParameters?.paymentType ?? "LC_AT_SIGHT",
+    incoterm: supplyDoc?.commercialParameters?.incoterm ?? null,
+    port: supplyDoc?.commercialParameters?.loadingPortOrTerminal ?? null,
+    paymentType: supplyDoc?.commercialParameters?.paymentType ?? null,
     tenorDays: 0,
     contractAmountUsd: supplyDoc?.commercialParameters?.totalValueUsd ?? 0,
     sourceDocument: supplyDoc?.extractionProvenance?.sourceFileName ?? null,
+    taint: supplyEntry?.taint ?? "UNVERIFIED_CLAIM",
     extractionTimestamp: supplyDoc?.extractionProvenance?.extractedAt ?? null,
     modelUsed: supplyDoc?.extractionProvenance?.modelUsed ?? null,
   };
 
   const offtakeContract: TradeLegContract = {
     contractReference: "OFFTAKE-LEG-01",
-    incoterm: offtakeDoc?.commercialParameters?.incoterm ?? "CFR",
-    port: offtakeDoc?.commercialParameters?.dischargePortOrTerminal ?? "Discharge Port TBD",
-    paymentType: offtakeDoc?.commercialParameters?.paymentType ?? "LC_USANCE_90D",
-    tenorDays: offtakeDoc?.commercialParameters?.paymentType?.includes("90D") ? 90 : 60,
+    incoterm: offtakeDoc?.commercialParameters?.incoterm ?? null,
+    port: offtakeDoc?.commercialParameters?.dischargePortOrTerminal ?? null,
+    paymentType: offtakeDoc?.commercialParameters?.paymentType ?? null,
+    tenorDays: offtakeDoc?.commercialParameters?.paymentType?.includes("90D") ? 90 : (offtakeDoc?.commercialParameters?.paymentType?.includes("60D") ? 60 : 0),
     contractAmountUsd: offtakeDoc?.commercialParameters?.totalValueUsd ?? 0,
     sourceDocument: offtakeDoc?.extractionProvenance?.sourceFileName ?? null,
+    taint: offtakeEntry?.taint ?? "UNVERIFIED_CLAIM",
     extractionTimestamp: offtakeDoc?.extractionProvenance?.extractedAt ?? null,
     modelUsed: offtakeDoc?.extractionProvenance?.modelUsed ?? null,
   };
@@ -151,11 +209,11 @@ export function reconcileTradeExtractions(
   // 5. Commodity & Tolerance Reconciliation
   const supplyQty = supplyDoc?.commoditySpecs?.volume ?? 0;
   const offtakeQty = offtakeDoc?.commoditySpecs?.volume ?? 0;
-  const supplyTol = supplyDoc?.commoditySpecs?.tolerancePct ?? 10;
-  const offtakeTol = offtakeDoc?.commoditySpecs?.tolerancePct ?? 5;
-  const toleranceDelta = Math.abs(supplyTol - offtakeTol);
+  const supplyTol = supplyDoc?.commoditySpecs?.tolerancePct ?? null;
+  const offtakeTol = offtakeDoc?.commoditySpecs?.tolerancePct ?? null;
+  const toleranceDelta = supplyTol != null && offtakeTol != null ? Math.abs(supplyTol - offtakeTol) : 0;
 
-  if (toleranceDelta > 0) {
+  if (toleranceDelta > 0 && supplyTol != null && offtakeTol != null) {
     riskFlags.push({
       category: "QUANTITY_OR_TOLERANCE_MISMATCH",
       severity: toleranceDelta > 5 ? 4 : 2,

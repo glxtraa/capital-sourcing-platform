@@ -7,6 +7,7 @@ import {
   X,
   Loader2,
   Save,
+  RefreshCw,
   Building2,
   Globe,
   DollarSign,
@@ -74,7 +75,7 @@ export function EditVcInvestorModal({
   const [stages, setStages] = useState<string[]>(investor.targetStages ?? []);
   const [sectors, setSectors] = useState<string[]>(investor.preferredSectors ?? []);
   const [jurisdictions, setJurisdictions] = useState<string[]>(
-    investor.acceptedJurisdictions?.length ? investor.acceptedJurisdictions : ["Delaware (US)", "Any / Global"],
+    investor.acceptedJurisdictions ?? [],
   );
   const [customJurisdiction, setCustomJurisdiction] = useState("");
   const [minCheckUsd, setMinCheckUsd] = useState<number | string>(investor.minCheckUsd ?? "");
@@ -96,6 +97,29 @@ export function EditVcInvestorModal({
 
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isReResearching, setIsReResearching] = useState(false);
+  const [researchNotice, setResearchNotice] = useState<string | null>(null);
+
+  async function handleReResearchSingle() {
+    setIsReResearching(true);
+    setResearchNotice(null);
+    try {
+      const res = await fetch("/api/vc-investors/research", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ investorIds: [investor.id] }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to re-run research");
+      setResearchNotice("Investor thesis research refreshed successfully! Page snapshots and partner links updated.");
+      router.refresh();
+      if (onSaved) onSaved();
+    } catch (err: any) {
+      setResearchNotice("Error: " + (err?.message || "Failed to re-run research"));
+    } finally {
+      setIsReResearching(false);
+    }
+  }
 
   function toggleStage(s: string) {
     setStages((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]));
@@ -187,15 +211,42 @@ export function EditVcInvestorModal({
               </p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="rounded-lg p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 dark:hover:bg-neutral-800"
-          >
-            <X className="h-5 w-5" />
-          </button>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              type="button"
+              onClick={handleReResearchSingle}
+              disabled={isReResearching}
+              className="text-xs gap-1.5 border-violet-300 dark:border-violet-800 text-violet-900 dark:text-violet-200 hover:bg-violet-100/50"
+            >
+              {isReResearching ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <span>Re-researching…</span>
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  <span>Re-run Research</span>
+                </>
+              )}
+            </Button>
+            <button
+              onClick={onClose}
+              className="rounded-lg p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 dark:hover:bg-neutral-800"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-6 text-xs">
+          {researchNotice && (
+            <div className={`p-2.5 rounded-lg text-xs font-semibold ${researchNotice.startsWith("Error") ? "bg-red-100 text-red-900 border border-red-300" : "bg-emerald-100 text-emerald-900 border border-emerald-300"}`}>
+              {researchNotice}
+            </div>
+          )}
           {/* Section 1: Basic Identity */}
           <div className="space-y-3">
             <h4 className="font-semibold uppercase tracking-wider text-neutral-500">

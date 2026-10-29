@@ -10,24 +10,20 @@ interface EditVcDealModalProps {
   deal: {
     id: string;
     companyName: string;
-    legalEntityJurisdiction: string;
+    legalEntityJurisdiction: string | null;
     stage: string;
     primaryVertical: string;
-    industry?: string | null;
-    subIndustries?: string[];
-    targetCustomerProfile?: string | null;
-    businessModel?: string | null;
     financingAsks: Array<{
-      targetRaiseUsd: number;
-      instrumentType: string;
+      targetRaiseUsd: number | null;
+      instrumentType: string | null;
       valuationCapUsd: number | null;
-      plannedRunwayMonths: number;
+      plannedRunwayMonths: number | null;
       leadCommitted: boolean;
     }>;
     capTable: {
-      foundersOwnershipPct: number;
-      investorOwnershipPct: number;
-      optionPoolPct: number;
+      foundersOwnershipPct: number | null;
+      investorOwnershipPct: number | null;
+      optionPoolPct: number | null;
       hasDeadEquity: boolean;
     } | null;
     founders: Array<{
@@ -47,23 +43,19 @@ export function EditVcDealModal({ deal, onClose }: EditVcDealModalProps) {
   const ask = deal.financingAsks[0];
 
   const [companyName, setCompanyName] = useState(deal.companyName);
-  const [jurisdiction, setJurisdiction] = useState(deal.legalEntityJurisdiction || "Delaware (US)");
+  const [jurisdiction, setJurisdiction] = useState(deal.legalEntityJurisdiction || "");
   const [stage, setStage] = useState(deal.stage);
   const [primaryVertical, setPrimaryVertical] = useState(deal.primaryVertical);
-  const [industry, setIndustry] = useState(deal.industry ?? "");
-  const [subIndustriesText, setSubIndustriesText] = useState((deal.subIndustries || []).join(", "));
-  const [targetCustomerProfile, setTargetCustomerProfile] = useState(deal.targetCustomerProfile ?? "");
-  const [businessModel, setBusinessModel] = useState(deal.businessModel ?? "");
 
-  const [targetRaiseUsd, setTargetRaiseUsd] = useState(ask?.targetRaiseUsd ?? 1500000);
-  const [valuationCapUsd, setValuationCapUsd] = useState<number | string>(ask?.valuationCapUsd ?? 12000000);
-  const [instrumentType, setInstrumentType] = useState(ask?.instrumentType ?? "POST_MONEY_SAFE");
-  const [plannedRunwayMonths, setPlannedRunwayMonths] = useState(ask?.plannedRunwayMonths ?? 18);
+  const [targetRaiseUsd, setTargetRaiseUsd] = useState<number | string>(ask?.targetRaiseUsd ?? "");
+  const [valuationCapUsd, setValuationCapUsd] = useState<number | string>(ask?.valuationCapUsd ?? "");
+  const [instrumentType, setInstrumentType] = useState(ask?.instrumentType ?? "");
+  const [plannedRunwayMonths, setPlannedRunwayMonths] = useState<number | string>(ask?.plannedRunwayMonths ?? "");
   const [leadCommitted, setLeadCommitted] = useState(ask?.leadCommitted ?? false);
 
-  const [foundersOwnershipPct, setFoundersOwnershipPct] = useState(deal.capTable?.foundersOwnershipPct ?? 80);
-  const [investorOwnershipPct, setInvestorOwnershipPct] = useState(deal.capTable?.investorOwnershipPct ?? 10);
-  const [optionPoolPct, setOptionPoolPct] = useState(deal.capTable?.optionPoolPct ?? 10);
+  const [foundersOwnershipPct, setFoundersOwnershipPct] = useState<number | string>(deal.capTable?.foundersOwnershipPct ?? "");
+  const [investorOwnershipPct, setInvestorOwnershipPct] = useState<number | string>(deal.capTable?.investorOwnershipPct ?? "");
+  const [optionPoolPct, setOptionPoolPct] = useState<number | string>(deal.capTable?.optionPoolPct ?? "");
   const [hasDeadEquity, setHasDeadEquity] = useState(deal.capTable?.hasDeadEquity ?? false);
 
   const [founders, setFounders] = useState(
@@ -111,21 +103,17 @@ export function EditVcDealModal({ deal, onClose }: EditVcDealModalProps) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           companyName,
-          legalEntityJurisdiction: jurisdiction,
+          legalEntityJurisdiction: jurisdiction || null,
           stage,
           primaryVertical,
-          industry: industry.trim() || null,
-          subIndustries: subIndustriesText.split(",").map((s) => s.trim()).filter(Boolean),
-          targetCustomerProfile: targetCustomerProfile.trim() || null,
-          businessModel: businessModel.trim() || null,
-          targetRaiseUsd: Number(targetRaiseUsd),
-          valuationCapUsd: valuationCapUsd ? Number(valuationCapUsd) : null,
-          instrumentType,
-          plannedRunwayMonths: Number(plannedRunwayMonths),
+          targetRaiseUsd: targetRaiseUsd !== "" && !isNaN(Number(targetRaiseUsd)) ? Number(targetRaiseUsd) : null,
+          valuationCapUsd: valuationCapUsd !== "" && !isNaN(Number(valuationCapUsd)) ? Number(valuationCapUsd) : null,
+          instrumentType: instrumentType || null,
+          plannedRunwayMonths: plannedRunwayMonths !== "" && !isNaN(Number(plannedRunwayMonths)) ? Number(plannedRunwayMonths) : null,
           leadCommitted,
-          foundersOwnershipPct: Number(foundersOwnershipPct),
-          investorOwnershipPct: Number(investorOwnershipPct),
-          optionPoolPct: Number(optionPoolPct),
+          foundersOwnershipPct: foundersOwnershipPct !== "" && !isNaN(Number(foundersOwnershipPct)) ? Number(foundersOwnershipPct) : null,
+          investorOwnershipPct: investorOwnershipPct !== "" && !isNaN(Number(investorOwnershipPct)) ? Number(investorOwnershipPct) : null,
+          optionPoolPct: optionPoolPct !== "" && !isNaN(Number(optionPoolPct)) ? Number(optionPoolPct) : null,
           hasDeadEquity,
           founders,
         }),
@@ -264,68 +252,6 @@ export function EditVcDealModal({ deal, onClose }: EditVcDealModalProps) {
             </div>
           </div>
 
-          {/* Section 1b: Industry Domain & ICP Matching Parameters */}
-          <div className="space-y-3 pt-3 border-t border-neutral-100 dark:border-neutral-800">
-            <h4 className="font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
-              Industry Domain &amp; ICP Matching Parameters (Agent DSL Input)
-            </h4>
-            <div className="space-y-3">
-              <div>
-                <label className="font-medium text-neutral-700 dark:text-neutral-300 block mb-1">
-                  Specific Industry &amp; Niche Description
-                </label>
-                <textarea
-                  rows={2}
-                  value={industry}
-                  onChange={(e) => setIndustry(e.target.value)}
-                  placeholder="e.g. Volumetric Water Benefit Accounting & Blockchain ESG Water Replenishment Registry"
-                  className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-xs dark:border-neutral-700 dark:bg-neutral-800"
-                />
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div>
-                  <label className="font-medium text-neutral-700 dark:text-neutral-300 block mb-1">
-                    Sub-Industries / Keywords (comma separated)
-                  </label>
-                  <input
-                    type="text"
-                    value={subIndustriesText}
-                    onChange={(e) => setSubIndustriesText(e.target.value)}
-                    placeholder="Water Stewardship, ESG Data, Replenishment Credits"
-                    className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-xs dark:border-neutral-700 dark:bg-neutral-800"
-                  />
-                </div>
-
-                <div>
-                  <label className="font-medium text-neutral-700 dark:text-neutral-300 block mb-1">
-                    Business &amp; Monetization Model
-                  </label>
-                  <input
-                    type="text"
-                    value={businessModel}
-                    onChange={(e) => setBusinessModel(e.target.value)}
-                    placeholder="e.g. Volume issuance fee per megaliter + annual corporate SaaS audit fee"
-                    className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-xs dark:border-neutral-700 dark:bg-neutral-800"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="font-medium text-neutral-700 dark:text-neutral-300 block mb-1">
-                  Target Customer Profile (ICP) &amp; Buyer Persona
-                </label>
-                <textarea
-                  rows={2}
-                  value={targetCustomerProfile}
-                  onChange={(e) => setTargetCustomerProfile(e.target.value)}
-                  placeholder="e.g. Fortune 500 beverage and food manufacturing corporations with water replenishment goals, and hyperscale datacenter operators"
-                  className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-xs dark:border-neutral-700 dark:bg-neutral-800"
-                />
-              </div>
-            </div>
-          </div>
-
           {/* Section 2: Financing Ask */}
           <div className="space-y-3 pt-3 border-t border-neutral-100 dark:border-neutral-800">
             <h4 className="font-semibold uppercase tracking-wider text-neutral-500">
@@ -367,6 +293,7 @@ export function EditVcDealModal({ deal, onClose }: EditVcDealModalProps) {
                   onChange={(e) => setInstrumentType(e.target.value)}
                   className="w-full rounded-lg border border-neutral-300 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-800"
                 >
+                  <option value="">Unspecified</option>
                   <option value="POST_MONEY_SAFE">Post-Money SAFE</option>
                   <option value="PRE_MONEY_SAFE">Pre-Money SAFE</option>
                   <option value="CONVERTIBLE_NOTE">Convertible Note</option>

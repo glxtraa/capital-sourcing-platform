@@ -15,6 +15,11 @@ export async function GET(
 
   const prospects = await db.startupCommercialProspect.findMany({
     where: { dealId },
+    include: {
+      contacts: {
+        orderBy: { createdAt: "asc" },
+      },
+    },
     orderBy: { createdAt: "asc" },
   });
 
@@ -41,7 +46,7 @@ export async function GET(
     subIndustries: deal?.subIndustries ?? [],
     targetCustomerProfile: deal?.targetCustomerProfile ?? "",
     businessModel: deal?.businessModel ?? "",
-    jurisdiction: deal?.legalEntityJurisdiction ?? "Delaware (US)",
+    jurisdiction: deal?.legalEntityJurisdiction ?? "",
     competitorsHint: (deal?.competitors || []).map((c) => c.name),
   };
 
@@ -131,9 +136,38 @@ export async function POST(
     const ask = deal.financingAsks[0];
     const targetRaise = ask?.targetRaiseUsd ? `$${ask.targetRaiseUsd.toLocaleString()}` : "early-stage venture capital";
 
+    // Gather rich context strictly from this deal's own uploaded documents
+    const docContextBlocks: string[] = [];
+    const docSubIndustries: string[] = [];
+    let docDerivedIndustry = "";
+
+    for (const doc of deal.documents) {
+      const raw = doc.extractedRaw as any;
+      if (raw) {
+        if (raw.documentSummary) {
+          docContextBlocks.push(`[${doc.fileName}]: ${raw.documentSummary}`);
+        }
+        if (raw.industry && !docDerivedIndustry) {
+          docDerivedIndustry = raw.industry;
+        }
+        if (Array.isArray(raw.subIndustries)) {
+          for (const sub of raw.subIndustries) {
+            if (sub && !docSubIndustries.includes(sub)) {
+              docSubIndustries.push(sub);
+            }
+          }
+        }
+      }
+    }
+
+    const effectiveIndustry = deal.industry || docDerivedIndustry || undefined;
+    const effectiveSubIndustries =
+      deal.subIndustries && deal.subIndustries.length > 0 ? deal.subIndustries : docSubIndustries;
+
     const summaryContext =
-      `${deal.companyName} is raising ${targetRaise} on ${ask?.instrumentType ?? "POST_MONEY_SAFE"}. ` +
+      `${deal.companyName} is raising ${targetRaise}${ask?.instrumentType ? ` on ${ask.instrumentType}` : ""}. ` +
       `Data room files: ${deal.documents.map((d) => d.fileName).join(", ") || "Deck and model"}. ` +
+      (docContextBlocks.length > 0 ? `Extracted Document Summaries: ${docContextBlocks.join(" | ")}. ` : "") +
       (deal.targetCustomerProfile ? `Target ICP: ${deal.targetCustomerProfile}. ` : "") +
       (deal.businessModel ? `Business Model: ${deal.businessModel}. ` : "");
 
@@ -148,38 +182,70 @@ export async function POST(
       companyName: deal.companyName,
       stage: deal.stage,
       primaryVertical: deal.primaryVertical,
-      industryHint: deal.industry || undefined,
-      subIndustries: deal.subIndustries,
+      industryHint: effectiveIndustry,
+      subIndustries: effectiveSubIndustries,
       descriptionOrDeckSummary: summaryContext,
       targetCustomerProfile: deal.targetCustomerProfile || undefined,
       businessModel: deal.businessModel || undefined,
-      jurisdiction: deal.legalEntityJurisdiction,
+      jurisdiction: deal.legalEntityJurisdiction || undefined,
       competitorsHint: competitorNames.length > 0 ? competitorNames : undefined,
       differentiationHint: diffs || undefined,
     });
 
     await db.$transaction(async (tx) => {
-      // 1. Clear old commercial prospects for this deal
-      await tx.startupCommercialProspect.deleteMany({ where: { dealId } });
+      const existing = await tx.startupCommercialProspect.findMany({
+        where: { dealId },
+        include: { contacts: true },
+      });
+      const existingByName = new Map(existing.map((p) => [p.name.toLowerCase().trim(), p]));
+      const keepIds = new Set<string>();
 
-      // 2. Persist newly discovered commercial prospects
-      if (result.prospects.length > 0) {
-        await tx.startupCommercialProspect.createMany({
-          data: result.prospects.map((p) => ({
-            dealId,
-            name: p.name,
-            websiteUrl: p.websiteUrl ?? null,
-            category: p.category,
-            buyerPersona: p.buyerPersona ?? null,
-            useCaseFit: p.useCaseFit,
-            estimatedAcvTier: p.estimatedAcvTier,
-            strategicSynergy: p.strategicSynergy ?? null,
-            sourceUrl: p.sourceUrl ?? null,
-            sourceVerified: p.sourceVerified,
-            sourceHttpStatus: p.sourceHttpStatus ?? null,
-            lastVerified: new Date(),
-          })),
-        });
+      for (const p of result.prospects) {
+        const key = p.name.toLowerCase().trim();
+        const prev = existingByName.get(key);
+        if (prev) {
+          keepIds.add(prev.id);
+          await tx.startupCommercialProspect.update({
+            where: { id: prev.id },
+            data: {
+              websiteUrl: p.websiteUrl ?? prev.websiteUrl,
+              category: p.category,
+              buyerPersona: p.buyerPersona ?? prev.buyerPersona,
+              useCaseFit: p.useCaseFit,
+              estimatedAcvTier: p.estimatedAcvTier,
+              strategicSynergy: p.strategicSynergy ?? prev.strategicSynergy,
+              sourceUrl: p.sourceUrl ?? prev.sourceUrl,
+              sourceVerified: p.sourceVerified,
+              sourceHttpStatus: p.sourceHttpStatus ?? prev.sourceHttpStatus,
+              lastVerified: new Date(),
+            },
+          });
+        } else {
+          const created = await tx.startupCommercialProspect.create({
+            data: {
+              dealId,
+              name: p.name,
+              websiteUrl: p.websiteUrl ?? null,
+              category: p.category,
+              buyerPersona: p.buyerPersona ?? null,
+              useCaseFit: p.useCaseFit,
+              estimatedAcvTier: p.estimatedAcvTier,
+              strategicSynergy: p.strategicSynergy ?? null,
+              sourceUrl: p.sourceUrl ?? null,
+              sourceVerified: p.sourceVerified,
+              sourceHttpStatus: p.sourceHttpStatus ?? null,
+              lastVerified: new Date(),
+            },
+          });
+          keepIds.add(created.id);
+        }
+      }
+
+      // Only delete obsolete prospects if they do not have any contacts attached
+      for (const prev of existing) {
+        if (!keepIds.has(prev.id) && prev.contacts.length === 0) {
+          await tx.startupCommercialProspect.delete({ where: { id: prev.id } });
+        }
       }
     });
 
@@ -259,12 +325,18 @@ export async function POST(
       }
     }
 
+    const savedProspects = await db.startupCommercialProspect.findMany({
+      where: { dealId },
+      include: { contacts: { orderBy: { createdAt: "asc" } } },
+      orderBy: { createdAt: "asc" },
+    });
+
     return NextResponse.json({
       ok: true,
       dslInput: result.dslInput,
       clients: result.clients,
       strategicPartners: result.strategicPartners,
-      prospects: result.prospects,
+      prospects: savedProspects.length > 0 ? savedProspects : result.prospects,
       verifiedLinks: result.verifiedLinks,
       auditSummary: result.auditSummary,
       targetCustomersCount: result.targetCustomersCount,

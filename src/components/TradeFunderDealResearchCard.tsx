@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Search, Loader2, Sparkles, Globe2, Building2 } from "lucide-react";
+import { Search, Loader2, Sparkles, Globe2, Building2, CheckCircle2, FileCode, ExternalLink, ChevronDown, ChevronUp } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, Button, Badge } from "@/components/ui/primitives";
+import { TradeFunderInspectorModal } from "@/components/TradeFunderInspectorModal";
 
 export function TradeFunderDealResearchCard({
   dealId,
@@ -22,12 +23,16 @@ export function TradeFunderDealResearchCard({
   const [stepLabel, setStepLabel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [successNotice, setSuccessNotice] = useState<string | null>(null);
+  const [researchedFunderData, setResearchedFunderData] = useState<any | null>(null);
+  const [isInspectorOpen, setIsInspectorOpen] = useState(false);
+  const [showFullFindings, setShowFullFindings] = useState(false);
 
   async function handleDealResearch(e?: React.FormEvent) {
     if (e) e.preventDefault();
     setIsSearching(true);
     setError(null);
     setSuccessNotice(null);
+    setResearchedFunderData(null);
 
     const queryToUse = funderQuery.trim() || defaultHint;
 
@@ -70,8 +75,14 @@ export function TradeFunderDealResearchCard({
       setStepLabel(`Evaluating newly researched funder "${structureData.funderName}" against deal…`);
       await fetch(`/api/trade-deals/${dealId}/match`, { method: "POST" });
 
+      setResearchedFunderData({
+        ...structureData.funder,
+        rawFindings: searchData.findings,
+        citedUrls: searchData.citedUrls,
+      });
+
       setSuccessNotice(
-        `Successfully researched and added "${structureData.funderName}" to the Trade Funder catalog and updated matches!`,
+        `Successfully researched and extracted "${structureData.funderName}"! Match evaluation completed.`,
       );
       setFunderQuery("");
       router.refresh();
@@ -139,8 +150,65 @@ export function TradeFunderDealResearchCard({
         )}
 
         {error && <p className="text-xs text-red-600">{error}</p>}
-        {successNotice && <p className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">{successNotice}</p>}
+        {successNotice && (
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50/80 p-3 text-xs dark:border-emerald-900/60 dark:bg-emerald-950/30 text-emerald-900 dark:text-emerald-200 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold flex items-center gap-1.5 text-emerald-800 dark:text-emerald-300">
+                <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                {successNotice}
+              </span>
+              {researchedFunderData && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setIsInspectorOpen(true)}
+                  className="h-7 text-xs gap-1 border-emerald-300 text-emerald-800 hover:bg-emerald-100 dark:border-emerald-800 dark:text-emerald-300"
+                >
+                  <FileCode className="h-3 w-3 text-emerald-600" />
+                  Inspect Extracted Funder Profile &amp; DSL
+                </Button>
+              )}
+            </div>
+
+            {/* Quick Extraction Highlights */}
+            {researchedFunderData && (
+              <div className="pt-2 border-t border-emerald-200/60 dark:border-emerald-900/60 grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
+                <div>
+                  <span className="text-neutral-500 font-medium">Institution:</span>
+                  <p className="font-bold text-neutral-900 dark:text-neutral-100">{researchedFunderData.name}</p>
+                </div>
+                <div>
+                  <span className="text-neutral-500 font-medium">Pricing Guidance:</span>
+                  <p className="font-mono font-semibold text-emerald-700 dark:text-emerald-300">
+                    {researchedFunderData.indicativePricingGuidance || "SOFR Benchmark"}
+                  </p>
+                </div>
+                <div>
+                  <span className="text-neutral-500 font-medium">Ticket Range:</span>
+                  <p className="font-semibold text-neutral-800 dark:text-neutral-200">
+                    {researchedFunderData.minTicketUsd ? `$${(researchedFunderData.minTicketUsd / 1e6).toFixed(1)}M` : "Any"} -{" "}
+                    {researchedFunderData.maxTicketUsd ? `$${(researchedFunderData.maxTicketUsd / 1e6).toFixed(1)}M` : "Uncapped"}
+                  </p>
+                </div>
+                <div>
+                  <span className="text-neutral-500 font-medium">Supported Legs:</span>
+                  <p className="font-semibold text-neutral-800 dark:text-neutral-200">
+                    {(researchedFunderData.supportedLegs || []).join(", ") || "All Legs"}
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </CardContent>
+
+      {/* Full Extracted Funder Inspector Modal */}
+      {isInspectorOpen && researchedFunderData && (
+        <TradeFunderInspectorModal
+          funder={researchedFunderData}
+          onClose={() => setIsInspectorOpen(false)}
+        />
+      )}
     </Card>
   );
 }

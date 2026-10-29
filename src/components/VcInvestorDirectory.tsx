@@ -209,14 +209,18 @@ export function VcInvestorDirectory({ investors }: VcInvestorDirectoryProps) {
                       Accepted Jurisdictions:
                     </span>
                     <div className="flex flex-wrap gap-1">
-                      {(inv.acceptedJurisdictions?.length ? inv.acceptedJurisdictions : ["Delaware (US)", "Any / Global"]).map((j) => (
-                        <span
-                          key={j}
-                          className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300 font-mono"
-                        >
-                          {j}
-                        </span>
-                      ))}
+                      {inv.acceptedJurisdictions?.length ? (
+                        inv.acceptedJurisdictions.map((j) => (
+                          <span
+                            key={j}
+                            className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300 font-mono"
+                          >
+                            {j}
+                          </span>
+                        ))
+                      ) : (
+                        <span className="text-[10px] text-neutral-400 italic">Any / Unrestricted</span>
+                      )}
                     </div>
                   </div>
 

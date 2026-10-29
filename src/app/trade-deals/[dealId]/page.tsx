@@ -13,20 +13,55 @@ export default async function TradeDealDetailPage({
   params: Promise<{ dealId: string }>;
 }) {
   const { dealId } = await params;
-  const deal = await db.tradeDeal.findUnique({
-    where: { id: dealId },
-    include: {
-      documents: { orderBy: { uploadedAt: "asc" } },
-      parties: true,
-      contractLegs: true,
-      financingAsks: true,
-      riskFlags: { orderBy: { severity: "desc" } },
-      matches: { include: { funder: true }, orderBy: { createdAt: "desc" } },
-      termSheets: { orderBy: { createdAt: "desc" }, take: 1 },
-    },
-  });
+  const [deal, allFunders] = await Promise.all([
+    db.tradeDeal.findUnique({
+      where: { id: dealId },
+      include: {
+        documents: { orderBy: { uploadedAt: "asc" } },
+        parties: true,
+        contractLegs: true,
+        financingAsks: true,
+        riskFlags: { orderBy: { severity: "desc" } },
+        matches: {
+          include: {
+            funder: {
+              include: { documentsRequired: true },
+            },
+          },
+          orderBy: [{ isTier1: "desc" }, { createdAt: "desc" }],
+        },
+        termSheets: { orderBy: { createdAt: "desc" }, take: 1 },
+        researchRuns: { orderBy: { startedAt: "desc" } },
+      },
+    }),
+    db.tradeFunder.findMany({
+      include: { documentsRequired: true },
+      orderBy: { name: "asc" },
+    }),
+  ]);
 
   if (!deal) notFound();
+
+  // Ensure every funder in the catalog has a match record in the workspace so excluded funders are never invisible
+  const existingFunderIds = new Set(deal.matches.map((m) => m.funderId));
+  const missingFunders = allFunders.filter((f) => !existingFunderIds.has(f.id));
+
+  const synthesizedMatches = missingFunders.map((funder) => ({
+    id: `synth-${funder.id}`,
+    dealId: deal.id,
+    funderId: funder.id,
+    isUmbrella: funder.offersUmbrellaFacility,
+    verdict: "EXCLUDED",
+    rationale: "Funder mandate criteria (corridor, commodity, or ticket) not qualified for this deal.",
+    isTier1: false,
+    createdAt: new Date(),
+    funder,
+  }));
+
+  const fullDeal = {
+    ...deal,
+    matches: [...deal.matches, ...synthesizedMatches],
+  };
 
   return (
     <div className="space-y-6">
@@ -47,7 +82,12 @@ export default async function TradeDealDetailPage({
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <TradeDealActions dealId={deal.id} hasMatches={deal.matches.length > 0} />
+          <TradeDealActions
+            dealId={deal.id}
+            hasMatches={deal.matches.length > 0}
+            hasReconciled={deal.contractLegs.length > 0 || deal.parties.length > 0}
+            hasBenchmark={deal.termSheets.length > 0}
+          />
           <DeleteDealButton
             dealId={deal.id}
             dealName={deal.name}
@@ -59,7 +99,7 @@ export default async function TradeDealDetailPage({
       </div>
 
       {/* Structured 4-Stage Tabbed Workspace */}
-      <TradeDealWorkspaceTabs deal={deal} />
+      <TradeDealWorkspaceTabs deal={fullDeal} />
     </div>
   );
 }

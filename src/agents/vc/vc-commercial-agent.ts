@@ -72,7 +72,7 @@ function getDomainFallbackCommercial(
     ind.includes("ESG") ||
     ind.includes("ENVIRONMENTAL") ||
     ind.includes("CARBON") ||
-    ind.includes("CREDIT")
+    (ind.includes("CREDIT") && (ind.includes("WATER") || ind.includes("CARBON") || ind.includes("NATURE")))
   ) {
     return {
       marketContext: `${queryHint} — High-water-footprint corporations seeking auditable, verifiable replenishment credits under VWBA 2.0 standards, alongside environmental registries and ESG compliance platforms.`,
@@ -439,7 +439,7 @@ function getDomainFallbackCommercial(
     };
   }
 
-  // 4. GENERAL B2B SAAS
+  // 5. GENERAL B2B SAAS
   return {
     marketContext: `${queryHint} — Enterprise software operations, mid-market business teams, and platform integration channels.`,
     clients: [
@@ -487,7 +487,7 @@ function getDomainFallbackCommercial(
 
 /**
  * Discovers verified prospective enterprise clients (direct buyers) and strategic channel/integration partners
- * for an early-stage startup based on its vertical, industry niche, ICP, and business model.
+ * for an early-stage startup based strictly on its own data room documents, vertical, industry niche, ICP, and business model.
  */
 export async function researchStartupCommercialProspects(params: {
   companyName: string;
@@ -520,7 +520,7 @@ export async function researchStartupCommercialProspects(params: {
     subIndustries: subIndList,
     targetCustomerProfile: targetIcp,
     businessModel: bizModel,
-    jurisdiction: params.jurisdiction || "Delaware (US)",
+    jurisdiction: params.jurisdiction || "",
     competitorsHint: params.competitorsHint,
     differentiationHint: params.differentiationHint,
     descriptionOrDeckSummary: params.descriptionOrDeckSummary,
@@ -550,11 +550,9 @@ export async function researchStartupCommercialProspects(params: {
       `You MUST identify TWO distinct lists of REAL, existing commercial entities:\n\n` +
       `1. CLIENTS (3 to 6 real corporate or institutional accounts):\n` +
       `   - These are DIRECT BUYERS who suffer from the specific operational, regulatory, or ESG pain point that ${params.companyName} solves.\n` +
-      `   - E.g., for water stewardship / environmental accounting, clients are major corporate water consumers (food & beverage conglomerates like Coca-Cola/PepsiCo/Danone, hyperscale datacenter operators like Microsoft/AWS/Google, semiconductor fabs like Intel/TSMC).\n` +
       `   - Provide their real company name, official website URL, target buyer persona title (e.g. Chief Sustainability Officer, VP Water Stewardship, Head of Procurement), concrete use-case fit, and estimated contract value (ACV) tier.\n\n` +
       `2. STRATEGIC PARTNERS (3 to 6 real ecosystem, integration, or channel partners):\n` +
       `   - These are standard registries, compliance software platforms, data/telemetry providers, or co-selling alliances.\n` +
-      `   - E.g., for water/ESG: registries (Verra, The Water Council, VWBA), ESG software platforms (Persefoni, Watershed, Workiva), remote telemetry/satellite providers (Planet Labs, Hydrosat).\n` +
       `   - Provide their real company name, official website URL, category, integration fit, and strategic distribution synergy.\n\n` +
       `NEVER invent fake companies or generic non-relevant SaaS like Salesforce/HubSpot unless they are genuinely the direct buyer or partner for this vertical.`;
 

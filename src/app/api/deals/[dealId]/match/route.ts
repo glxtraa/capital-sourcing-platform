@@ -1,41 +1,44 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { matchAllProviders, buildMatchInputs } from "@/lib/matching";
+import { isBlockingRiskFlag } from "@/dsl/provenance";
 
-/**
- * Runs the mechanical provider filter against the CURRENT provider table and
- * persists the result -- nothing else. No LLM or web-search work happens
- * here, so this is a fast, DB-only request that can't hit Vercel Hobby's
- * 60s function cap.
- *
- * The "zero eligible providers -> research a new one -> try again" feedback
- * loop used to run inside this same request (up to three research attempts,
- * each a web search plus two LLM calls). That could run well past 60s and
- * get killed mid-request, leaving the deal stuck in MATCHING/RESEARCHING.
- * It's now driven by the caller instead (DealActions.runMatch): call this
- * route; if it reports zero eligible providers, call
- * POST .../research (one step per request, see that route) and then this
- * route again, up to a small attempt cap. Each individual request stays
- * short, and re-running is always safe -- this route recomputes everything
- * from current state.
- */
 export const maxDuration = 30;
 
-export async function POST(_req: Request, { params }: { params: Promise<{ dealId: string }> }) {
+export async function POST(req: Request, { params }: { params: Promise<{ dealId: string }> }) {
   const { dealId } = await params;
+  let body: any = {};
+  try {
+    body = await req.json();
+  } catch {
+    // optional body
+  }
 
   const deal = await db.deal.findUnique({
     where: { id: dealId },
-    include: { parties: true, financingAsks: true },
+    include: { parties: true, financingAsks: true, riskFlags: true },
   });
   if (!deal) return NextResponse.json({ error: "deal not found" }, { status: 404 });
+
+  const blockingFlags = deal.riskFlags.filter((rf) => isBlockingRiskFlag(rf));
+  if (blockingFlags.length > 0) {
+    return NextResponse.json(
+      {
+        error: `Matching blocked: ${blockingFlags.length} high-severity or security risk flag(s) require Human Verification ("Verify Safe" or "Waive with Notes") in Step 2 before running Capital Matching.`,
+        blockingFlags,
+      },
+      { status: 409 },
+    );
+  }
 
   await db.deal.update({ where: { id: dealId }, data: { status: "MATCHING" } });
 
   try {
     const { dealInput, askInput } = buildMatchInputs(deal.parties, deal.financingAsks);
     const providers = await db.provider.findMany();
-    const results = matchAllProviders(providers, dealInput, askInput);
+    const results = matchAllProviders(providers, dealInput, askInput, {
+      relaxInferredBlockers: Boolean(body?.relaxInferredBlockers),
+    });
     const eligibleCount = results.filter((r) => r.eligibleOnPaper).length;
 
     // In a fuller build this step also calls an LLM (mirroring deal-intake's

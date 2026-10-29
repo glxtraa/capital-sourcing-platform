@@ -98,8 +98,21 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ dealId
         data: parties.map((p: any) => ({
           dealId,
           legalName: p.legalName || p.name || "Unknown Party",
-          role: (p.role === "BORROWER" || p.role === "CLIENT" ? "BORROWER" : p.role === "SUPPLIER" ? "SUPPLIER" : "OBLIGOR") as any,
+          role: (p.role === "BORROWER" || p.role === "CLIENT"
+            ? "BORROWER"
+            : p.role === "SUPPLIER"
+            ? "SUPPLIER"
+            : p.role === "INTERMEDIARY"
+            ? "INTERMEDIARY"
+            : p.role === "GUARANTOR"
+            ? "GUARANTOR"
+            : "OBLIGOR") as any,
           jurisdiction: p.jurisdiction || null,
+          publicRating: p.publicRating || null,
+          isListed: typeof p.isListed === "boolean" ? p.isListed : null,
+          primaryRightHolderName: p.primaryRightHolderName || null,
+          primaryRightHolderVerified: Boolean(p.primaryRightHolderVerified),
+          notes: p.notes || null,
         })),
       });
     }
@@ -112,9 +125,12 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ dealId
           dealId,
           structureType: a.structureType || "POST_SHIPMENT_RECEIVABLES_DISCOUNTING",
           amount: typeof a.amount === "number" ? a.amount : (a.amountUsd ?? 250000),
+          currency: a.currency || "USD",
           advanceRatePct: typeof a.advanceRatePct === "number" ? a.advanceRatePct : 85,
           tenorDaysMax: typeof a.tenorDaysMax === "number" ? a.tenorDaysMax : (a.targetTenorDays ?? 60),
           tenorDaysMin: typeof a.tenorDaysMin === "number" ? a.tenorDaysMin : 30,
+          tenorNote: a.tenorNote || null,
+          recurring: Boolean(a.recurring),
         })),
       });
     }

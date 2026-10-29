@@ -40,6 +40,9 @@ export const RiskFlagCategory = z.enum([
   "DOCUMENTARY_FRAUD_PATTERN",
   "STALE_DEADLINE",
   "MISSING_DOCUMENT",
+  "PROMPT_INJECTION_SUSPECTED",
+  "TAINTED_CLAIM_CONFLICT",
+  "UNANCHORED_EXTRACTION",
   "OTHER",
 ]);
 export type RiskFlagCategory = z.infer<typeof RiskFlagCategory>;
@@ -66,6 +69,9 @@ export const PartySchema = z.object({
   primaryRightHolderVerified: z.boolean().default(false),
   /** Which source document(s) this party's data came from, for audit. */
   sourceDocuments: z.array(z.string()).default([]),
+  /** Verbatim quote from the document proving this party's role and details. */
+  verbatimQuote: z.string().nullable().optional(),
+  pageOrSheet: z.string().nullable().optional(),
 });
 export type Party = z.infer<typeof PartySchema>;
 
@@ -93,6 +99,8 @@ export const FinancingAskSchema = z.object({
       "(e.g. PT KEM's shipping transit time was never stated in any contract)."),
   recurring: z.boolean().default(false),
   recurringNote: z.string().nullable().optional(),
+  verbatimQuote: z.string().nullable().optional(),
+  pageOrSheet: z.string().nullable().optional(),
 });
 export type FinancingAsk = z.infer<typeof FinancingAskSchema>;
 
@@ -100,6 +108,8 @@ export const RiskFlagSchema = z.object({
   category: RiskFlagCategory,
   severity: z.number().int().min(1).max(5),
   description: z.string().min(1),
+  sourceFileName: z.string().nullable().optional(),
+  evidenceSnippet: z.string().nullable().optional(),
 });
 export type RiskFlag = z.infer<typeof RiskFlagSchema>;
 

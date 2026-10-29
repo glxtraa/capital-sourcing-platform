@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { StartupStageSchema, StartupSectorSchema } from "./vc-extraction-schema";
 import { StartupJurisdictionSchema, VC_STANDARD_JURISDICTIONS } from "./vc-jurisdictions";
+import { CriterionRuleProvenanceSchema } from "../provenance";
 
 export const StartupInvestorTypeSchema = z.enum([
   "INSTITUTIONAL_VC",
@@ -37,7 +38,7 @@ export const StartupInvestorSchema = z.object({
   acceptedJurisdictions: z
     .array(StartupJurisdictionSchema)
     .optional()
-    .default(["Delaware (US)", "Any / Global"])
+    .default([])
     .describe(
       `Recognized VC jurisdictions: ${VC_STANDARD_JURISDICTIONS.join(", ")}. Defines acceptable corporate holding entity domiciles.`
     ),
@@ -89,7 +90,7 @@ export const StartupInvestorSchema = z.object({
         cachedPageId: z.string().optional(),
         cachedTitle: z.string().optional(),
         cachedSnippet: z.string().optional(),
-        error: z.string().optional(),
+        error: z.string().nullable().optional(),
       }),
     )
     .optional()
@@ -99,7 +100,7 @@ export const StartupInvestorSchema = z.object({
   typicalTurnaroundWeeks: z.number().int().nullable().optional(),
   applicationRoute: z.enum(["OPEN_PORTAL", "SCOUT_FORM", "WARM_INTRO", "ACCELERATOR_COHORT"]).optional().default("WARM_INTRO"),
   applicationUrl: z.string().nullable().optional(),
-  websiteUrl: z.string().nullable().optional().describe("Official firm website URL (e.g. https://www.phoenixcourt.vc/)"),
+  websiteUrl: z.string().nullable().optional().describe("Official firm website URL (e.g. https://www.firmname.com or https://www.fund.vc)"),
   contactEmail: z.string().nullable().optional().describe("General contact, pitch inbox, or partner email address"),
   headquarters: z.string().nullable().optional().describe("Office address, city or country of primary fund operations"),
   keyContacts: z.array(KeyContactSchema).optional().default([]).describe("Key partners, investment directors, or sector leads"),
@@ -112,6 +113,7 @@ export const StartupInvestorSchema = z.object({
       note: z.string().nullable().optional(),
     }),
   ).optional().default([]),
+  criteriaProvenance: z.array(CriterionRuleProvenanceSchema).default([]).optional(),
 });
 export type StartupInvestorDTO = z.infer<typeof StartupInvestorSchema>;
 export type StartupInvestorInput = z.input<typeof StartupInvestorSchema>;

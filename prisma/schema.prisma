@@ -122,18 +122,27 @@ enum RiskFlagCategory {
   // Radiant World/Churchill Mining-style)
   STALE_DEADLINE // a referenced financing teaser's own dates have passed
   MISSING_DOCUMENT
+  PROMPT_INJECTION_SUSPECTED
+  TAINTED_CLAIM_CONFLICT
+  UNANCHORED_EXTRACTION
   OTHER
 }
 
 model RiskFlag {
-  id          String            @id @default(cuid())
-  dealId      String
-  deal        Deal              @relation(fields: [dealId], references: [id], onDelete: Cascade)
-  category    RiskFlagCategory
-  severity    Int // 1 (low) - 5 (high) — used to sort the gap analysis / benchmark docs
-  description String
-  resolvedAt  DateTime?
-  createdAt   DateTime          @default(now())
+  id                 String            @id @default(cuid())
+  dealId             String
+  deal               Deal              @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  category           RiskFlagCategory
+  severity           Int // 1 (low) - 5 (high) — used to sort the gap analysis / benchmark docs
+  description        String
+  resolvedAt         DateTime?
+  verificationStatus String            @default("UNVERIFIED") // "UNVERIFIED" | "HUMAN_VERIFIED_SAFE" | "WAIVED_WITH_NOTES" | "HUMAN_CONFIRMED_RISK"
+  verifiedBy         String?
+  verifiedAt         DateTime?
+  verificationNotes  String?
+  sourceFileName     String?
+  evidenceSnippet    String?
+  createdAt          DateTime          @default(now())
 }
 
 model UploadedDocument {
@@ -154,6 +163,7 @@ model UploadedDocument {
   // been uploaded. Empty until extraction runs (or re-runs) after this field
   // was added.
   documentTypes String[] @default([])
+  taintOverride String? // null (use DocumentTaintPolicy) | "AUDITED_PROOF" | "UNVERIFIED_CLAIM"
   uploadedAt  DateTime @default(now())
 }
 
@@ -509,14 +519,20 @@ model TradeFinancingAskModel {
 }
 
 model TradeRiskFlag {
-  id          String    @id @default(cuid())
-  dealId      String
-  deal        TradeDeal @relation(fields: [dealId], references: [id], onDelete: Cascade)
-  category    String
-  severity    Int       // 1 - 5
-  description String
-  resolved    Boolean   @default(false)
-  createdAt   DateTime  @default(now())
+  id                 String    @id @default(cuid())
+  dealId             String
+  deal               TradeDeal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  category           String
+  severity           Int       // 1 - 5
+  description        String
+  resolved           Boolean   @default(false)
+  verificationStatus String    @default("UNVERIFIED") // "UNVERIFIED" | "HUMAN_VERIFIED_SAFE" | "WAIVED_WITH_NOTES" | "HUMAN_CONFIRMED_RISK"
+  verifiedBy         String?
+  verifiedAt         DateTime?
+  verificationNotes  String?
+  sourceFileName     String?
+  evidenceSnippet    String?
+  createdAt          DateTime  @default(now())
 }
 
 model UploadedTradeDocument {
@@ -529,6 +545,7 @@ model UploadedTradeDocument {
   sizeBytes   Int
   tradeLeg    String?
   documentTypes String[] @default([])
+  taintOverride String? // null (use DocumentTaintPolicy) | "AUDITED_PROOF" | "UNVERIFIED_CLAIM"
   extractedRaw  Json?
   uploadedAt  DateTime  @default(now())
 }
@@ -681,7 +698,7 @@ model StartupDeal {
   subIndustries             String[]            @default([])
   targetCustomerProfile     String?
   businessModel             String?
-  legalEntityJurisdiction   String              @default("Delaware (US)")
+  legalEntityJurisdiction   String?
   status                    StartupDealStatus   @default(UPLOADING)
   createdAt                 DateTime            @default(now())
   updatedAt                 DateTime            @updatedAt
@@ -761,7 +778,6 @@ model StartupCompetitor {
   updatedAt                 DateTime     @updatedAt
 }
 
-
 model StartupFounder {
   id                        String       @id @default(cuid())
   dealId                    String
@@ -781,9 +797,9 @@ model StartupCapTable {
   id                        String       @id @default(cuid())
   dealId                    String       @unique
   deal                      StartupDeal  @relation(fields: [dealId], references: [id], onDelete: Cascade)
-  foundersOwnershipPct      Float
-  investorOwnershipPct      Float
-  optionPoolPct             Float
+  foundersOwnershipPct      Float?
+  investorOwnershipPct      Float?
+  optionPoolPct             Float?
   safesNotesOutstandingUsd  Float        @default(0)
   safeHoldersJson           Json?
   commonHoldersJson         Json?
@@ -794,18 +810,18 @@ model StartupCapTable {
 }
 
 model StartupFinancingAsk {
-  id                        String                 @id @default(cuid())
+  id                        String                  @id @default(cuid())
   dealId                    String
-  deal                      StartupDeal            @relation(fields: [dealId], references: [id], onDelete: Cascade)
-  targetRaiseUsd            Float
-  instrumentType            StartupInstrumentType  @default(POST_MONEY_SAFE)
+  deal                      StartupDeal             @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  targetRaiseUsd            Float?
+  instrumentType            StartupInstrumentType?
   valuationCapUsd           Float?
   discountPct               Float?
-  plannedRunwayMonths       Int                    @default(18)
-  leadCommitted             Boolean                @default(false)
-  committedAmountUsd        Float                  @default(0)
+  plannedRunwayMonths       Int?
+  leadCommitted             Boolean                 @default(false)
+  committedAmountUsd        Float                   @default(0)
   useOfProceedsJson         Json?
-  createdAt                 DateTime               @default(now())
+  createdAt                 DateTime                @default(now())
 }
 
 model StartupRiskFlag {
@@ -816,6 +832,12 @@ model StartupRiskFlag {
   severity                  Int          // 1 - 5
   description               String
   resolved                  Boolean      @default(false)
+  verificationStatus        String       @default("UNVERIFIED") // "UNVERIFIED" | "HUMAN_VERIFIED_SAFE" | "WAIVED_WITH_NOTES" | "HUMAN_CONFIRMED_RISK"
+  verifiedBy                String?
+  verifiedAt                DateTime?
+  verificationNotes         String?
+  sourceFileName            String?
+  evidenceSnippet           String?
   createdAt                 DateTime     @default(now())
 }
 
@@ -828,6 +850,7 @@ model UploadedStartupDocument {
   mimeType                  String
   sizeBytes                 Int
   documentTypes             String[]     @default([])
+  taintOverride             String?      // null (use DocumentTaintPolicy) | "AUDITED_PROOF" | "UNVERIFIED_CLAIM"
   extractedRaw              Json?
   uploadedAt                DateTime     @default(now())
 }
@@ -845,7 +868,7 @@ model StartupInvestor {
   leadsRounds               Boolean             @default(false)
   takesBoardSeats           Boolean             @default(false)
   targetOwnershipPct        Float?
-  acceptedJurisdictions     String[]            @default(["Delaware (US)", "any"])
+  acceptedJurisdictions     String[]            @default([])
   minArrUsd                 Float?
   portfolioCompanies        String[]            @default([])
   activelyFundingIndustry   Boolean             @default(true)
@@ -853,6 +876,7 @@ model StartupInvestor {
   competitorInvestments     Json?               // Array of { competitorName, roundStage, conflictSeverity, notes, sourceUrl, verified }
   thesisMatchSummary        String?
   sourceLinksAudit          Json?               // Array of { url, status, ok, latencyMs, testedAt }
+  criteriaProvenance        Json?               // Array of CriterionRuleProvenance
   gatingFactor              String?
   typicalTurnaroundWeeks    Int?
   applicationRoute          String              @default("WARM_INTRO") // "OPEN_PORTAL", "SCOUT_FORM", "WARM_INTRO", "ACCELERATOR_COHORT"
@@ -952,3 +976,45 @@ model ResearchPageCache {
   @@index([cachedAt])
 }
 
+// ---------------------------------------------------------------------------
+// Editable Document Taint Policy — maps Document Taxonomy codes across all 3
+// asset classes ("INVOICE", "TRADE", "VC") to AUDITED_PROOF or UNVERIFIED_CLAIM.
+// ---------------------------------------------------------------------------
+
+model DocumentTaintPolicy {
+  id           String   @id @default(cuid())
+  assetClass   String   // "INVOICE" | "TRADE" | "VC"
+  taxonomyCode String   // e.g. "VC_PITCH_DECK", "VC_CAP_TABLE", "TRADE_OCEAN_BILL_OF_LADING", "DEAL_CONTRACT"
+  label        String   // Human-readable label
+  defaultTaint String   @default("UNVERIFIED_CLAIM") // "AUDITED_PROOF" | "UNVERIFIED_CLAIM"
+  updatedBy    String?
+  updatedAt    DateTime @updatedAt
+
+  @@unique([assetClass, taxonomyCode])
+}
+
+// ---------------------------------------------------------------------------
+// Persistent DSL Revision & Rollback Engine — tracks every agent extraction
+// and human override version of deal specifications, extractions, and matching
+// inputs across all 3 asset classes with notes and instant rollback.
+// ---------------------------------------------------------------------------
+
+model DealDslRevision {
+  id            String   @id @default(cuid())
+  assetClass    String   // "STARTUP" | "TRADE" | "INVOICE"
+  dealId        String   // ID of deal in whichever asset class
+  tabKey        String   // "dataroom" | "spec" | "matching" | "blueprint"
+  dslType       String   // "STARTUP_DEAL_SPEC" | "TRADE_DEAL_SPEC" | "INVOICE_DEAL_SPEC" | "EXTRACTION_PAYLOAD"
+  versionNumber Int      // 1, 2, 3...
+  label         String   // e.g. "v2 - Human Correction: Water Domain"
+  authorType    String   // "AGENT_EXTRACTION" | "HUMAN_OVERRIDE" | "ROLLBACK_RESTORE"
+  authorNote    String?  // Human operator rationale or agent summary
+  payloadJson   Json     // Full snapshot of the DSL payload
+  diffSummary   String?  // Human readable summary of what changed
+  isCurrent     Boolean  @default(true)
+  createdAt     DateTime @default(now())
+
+  @@index([dealId, tabKey])
+  @@index([dealId, dslType])
+  @@index([createdAt])
+}

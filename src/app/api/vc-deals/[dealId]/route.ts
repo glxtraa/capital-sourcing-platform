@@ -14,7 +14,12 @@ export async function GET(_req: Request, { params }: { params: Promise<{ dealId:
       financingAsks: true,
       riskFlags: { orderBy: { severity: "desc" } },
       competitors: { orderBy: { createdAt: "asc" } },
-      commercialProspects: { orderBy: { createdAt: "asc" } },
+      commercialProspects: {
+        include: {
+          contacts: { orderBy: { createdAt: "asc" } },
+        },
+        orderBy: { createdAt: "asc" },
+      },
       matches: {
         include: {
           investor: {
@@ -98,10 +103,6 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ dealId
     legalEntityJurisdiction,
     stage,
     primaryVertical,
-    industry,
-    subIndustries,
-    targetCustomerProfile,
-    businessModel,
     targetRaiseUsd,
     valuationCapUsd,
     instrumentType,
@@ -118,31 +119,26 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ dealId
   } = body;
 
   await db.$transaction(async (tx) => {
-    // 1. Update core deal metadata including jurisdiction, industry & ICP profile
+    // 1. Update core deal metadata including jurisdiction
     await tx.startupDeal.update({
       where: { id: dealId },
       data: {
         ...(companyName ? { companyName: String(companyName).trim() } : {}),
-        ...(legalEntityJurisdiction ? { legalEntityJurisdiction: String(legalEntityJurisdiction).trim() } : {}),
+        ...(legalEntityJurisdiction !== undefined ? { legalEntityJurisdiction: legalEntityJurisdiction ? String(legalEntityJurisdiction).trim() : null } : {}),
         ...(stage ? { stage } : {}),
         ...(primaryVertical ? { primaryVertical } : {}),
-        ...(industry !== undefined ? { industry: typeof industry === "string" ? industry.trim() : null } : {}),
-        ...(Array.isArray(subIndustries) ? { subIndustries } : {}),
-        ...(targetCustomerProfile !== undefined ? { targetCustomerProfile: typeof targetCustomerProfile === "string" ? targetCustomerProfile.trim() : null } : {}),
-        ...(businessModel !== undefined ? { businessModel: typeof businessModel === "string" ? businessModel.trim() : null } : {}),
       },
     });
-
 
     // 2. Update financing ask
     if (deal.financingAsks.length > 0) {
       await tx.startupFinancingAsk.update({
         where: { id: deal.financingAsks[0].id },
         data: {
-          ...(typeof targetRaiseUsd === "number" ? { targetRaiseUsd } : {}),
+          ...(targetRaiseUsd !== undefined ? { targetRaiseUsd: targetRaiseUsd != null ? Number(targetRaiseUsd) : null } : {}),
           ...(valuationCapUsd !== undefined ? { valuationCapUsd: valuationCapUsd ? Number(valuationCapUsd) : null } : {}),
-          ...(instrumentType ? { instrumentType } : {}),
-          ...(typeof plannedRunwayMonths === "number" ? { plannedRunwayMonths } : {}),
+          ...(instrumentType !== undefined ? { instrumentType: instrumentType || null } : {}),
+          ...(plannedRunwayMonths !== undefined ? { plannedRunwayMonths: plannedRunwayMonths != null ? Number(plannedRunwayMonths) : null } : {}),
           ...(typeof leadCommitted === "boolean" ? { leadCommitted } : {}),
         },
       });
@@ -153,9 +149,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ dealId
       await tx.startupCapTable.update({
         where: { id: deal.capTable.id },
         data: {
-          ...(typeof foundersOwnershipPct === "number" ? { foundersOwnershipPct } : {}),
-          ...(typeof investorOwnershipPct === "number" ? { investorOwnershipPct } : {}),
-          ...(typeof optionPoolPct === "number" ? { optionPoolPct } : {}),
+          ...(foundersOwnershipPct !== undefined ? { foundersOwnershipPct: foundersOwnershipPct != null ? Number(foundersOwnershipPct) : null } : {}),
+          ...(investorOwnershipPct !== undefined ? { investorOwnershipPct: investorOwnershipPct != null ? Number(investorOwnershipPct) : null } : {}),
+          ...(optionPoolPct !== undefined ? { optionPoolPct: optionPoolPct != null ? Number(optionPoolPct) : null } : {}),
           ...(typeof safesNotesOutstandingUsd === "number" ? { safesNotesOutstandingUsd } : {}),
           ...(safeHolders !== undefined ? { safeHoldersJson: safeHolders } : {}),
           ...(commonHolders !== undefined ? { commonHoldersJson: commonHolders } : {}),

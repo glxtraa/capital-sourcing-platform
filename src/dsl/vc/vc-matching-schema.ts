@@ -1,5 +1,18 @@
 import { z } from "zod";
 import { StartupInvestorTypeSchema } from "./vc-investor-schema";
+import { CriterionAcquisitionMethodSchema } from "../provenance";
+
+export const FunderSideProvenanceSchema = z.object({
+  ruleSummary: z.string(),
+  acquisitionMethod: CriterionAcquisitionMethodSchema,
+  howObtainedExplanation: z.string(),
+  sourceUrl: z.string().nullable().optional(),
+  sourcePageTitle: z.string().nullable().optional(),
+  verbatimQuote: z.string().nullable().optional(),
+  surroundingContext: z.string().nullable().optional(),
+  quoteVerifiedInCache: z.boolean().optional(),
+});
+export type FunderSideProvenance = z.infer<typeof FunderSideProvenanceSchema>;
 
 export const CriterionStatusSchema = z.enum(["pass", "fail", "warning"]);
 export type CriterionStatus = z.infer<typeof CriterionStatusSchema>;
@@ -9,6 +22,7 @@ export const MatchCriterionSchema = z.object({
   label: z.string(),
   status: CriterionStatusSchema,
   detail: z.string(),
+  funderSide: FunderSideProvenanceSchema.nullable().optional(),
 });
 export type MatchCriterion = z.infer<typeof MatchCriterionSchema>;
 
@@ -64,6 +78,7 @@ export const SyndicateCustomPreferencesSchema = z.object({
   angelAllocationPct: z.number().min(0).max(100).default(10),
   minAngelCheckUsd: z.number().default(10000),
   customValuationCapUsd: z.number().nullable().optional(),
+  relaxInferredBlockers: z.boolean().default(false).optional(),
 });
 export type SyndicateCustomPreferences = z.infer<typeof SyndicateCustomPreferencesSchema>;
 

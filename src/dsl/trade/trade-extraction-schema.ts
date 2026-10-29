@@ -97,10 +97,15 @@ export const TradeDocumentExtractionSchema = z.object({
       "COLD_CHAIN_TEMPERATURE_ABUSE",
       "SANCTION_FLAG",
       "DOUBLE_PLEDGE_INDICATOR",
-      "MISSING_MANDATORY_PERMIT"
+      "MISSING_MANDATORY_PERMIT",
+      "PROMPT_INJECTION_SUSPECTED",
+      "TAINTED_CLAIM_CONFLICT",
+      "UNANCHORED_EXTRACTION"
     ]),
     severity: z.number().int().min(1).max(5),
     description: z.string(),
+    sourceFileName: z.string().nullable().optional(),
+    evidenceSnippet: z.string().nullable().optional(),
   })),
 
   openQuestions: z.array(z.string()).default([]),
@@ -111,6 +116,10 @@ export const TradeDocumentExtractionSchema = z.object({
     extractedAt: z.string().default(""),
     modelUsed: z.string().default(""),
     ocrEngineUsed: z.string().default(""),
+    taint: z.string().nullable().optional(),
+    verbatimQuote: z.string().nullable().optional(),
+    pageOrSheet: z.string().nullable().optional(),
+    quoteVerifiedInText: z.boolean().nullable().optional(),
   }).optional(),
 });
 export type TradeDocumentExtraction = z.infer<typeof TradeDocumentExtractionSchema>;

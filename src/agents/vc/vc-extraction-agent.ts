@@ -12,6 +12,9 @@ import {
   VC_DOCUMENT_TAXONOMY,
   type StartupDocumentExtraction,
 } from "@/dsl/vc";
+import { scanForPromptInjection, verifyVerbatimQuoteInText } from "@/lib/provenance-verifier";
+import { computePromptSha256, savePromptSnapshot } from "@/lib/prompt-cache";
+import type { LlmExecutionActor } from "@/dsl/provenance";
 
 const SYSTEM_PROMPT = readFileSync(
   join(process.cwd(), "src/agents/prompts/vc-extraction.md"),
@@ -52,6 +55,7 @@ export async function extractFromVCDocument(
     mimeType === "application/vnd.ms-excel";
 
   let userMessage: ChatCompletionMessageParam;
+  let parsedSourceTextForVerification: string | null = null;
 
   if (isPdf) {
     userMessage = {
@@ -72,6 +76,7 @@ export async function extractFromVCDocument(
     };
   } else if (isSpreadsheet) {
     const parsedSpreadsheet = await parseSpreadsheet(fileBuffer, fileName, mimeType);
+    parsedSourceTextForVerification = parsedSpreadsheet.combinedMarkdown;
     const hintText = parsedSpreadsheet.detectedDocTypeHint
       ? `\nAuto-detected spreadsheet format: ${parsedSpreadsheet.detectedDocTypeHint}`
       : "";
@@ -85,27 +90,87 @@ export async function extractFromVCDocument(
         `### SPREADSHEET CONTENT:\n\n${parsedSpreadsheet.combinedMarkdown}`,
     };
   } else {
+    parsedSourceTextForVerification = fileBuffer.toString("utf-8");
     userMessage = {
       role: "user",
       content:
         `Document filename: ${fileName}\n\n` +
         `Extract startup funding and data room parameters per the system prompt.\n\n${TAXONOMY_HINT}\n\n` +
-        `${fileBuffer.toString("utf-8")}`,
+        `${parsedSourceTextForVerification}`,
     };
   }
 
   const params: ChatCompletionCreateParamsNonStreaming & { plugins?: readonly unknown[] } = {
     model: EXTRACTION_MODEL,
+    temperature: 0,
     response_format: RESPONSE_FORMAT,
     messages: [{ role: "system", content: SYSTEM_PROMPT }, userMessage],
     ...(isPdf ? { plugins: pdfParserPlugin() } : {}),
   };
 
+  const startTime = Date.now();
+  const promptSha256 = await computePromptSha256(SYSTEM_PROMPT, TAXONOMY_HINT);
+
+  // Save prompt snapshot deduplicated once
+  await savePromptSnapshot({
+    sha256: promptSha256,
+    templateId: "VC_EXTRACTION_PROMPT_V1",
+    agentPersonaId: "daiki",
+    agentDisplayName: "Daiki (大輝) — Venture Capital Thesis Architect",
+    systemPrompt: SYSTEM_PROMPT,
+    taxonomyOrSchemaHint: TAXONOMY_HINT,
+    modelSlug: EXTRACTION_MODEL,
+    firstRecordedAt: new Date().toISOString(),
+  });
+
   const response = await client.chat.completions.create(params);
+  const latencyMs = Date.now() - startTime;
   const content = response.choices[0]?.message?.content;
   if (!content) {
     throw new Error(`VC extraction agent returned no content for ${fileName}.`);
   }
 
-  return StartupDocumentExtractionSchema.parse(JSON.parse(content));
+  const parsed = StartupDocumentExtractionSchema.parse(JSON.parse(content));
+
+  const llmActor: LlmExecutionActor = {
+    actorType: "LLM_AGENT",
+    agentPersonaId: "daiki",
+    agentDisplayName: "Daiki (大輝) — Venture Capital Thesis Architect",
+    processStage: "SINGLE_DOC_EXTRACTION",
+    modelSlug: response.model || EXTRACTION_MODEL,
+    ocrEngine: isPdf ? (process.env.OPENROUTER_PDF_ENGINE ?? "mistral-ocr") : isSpreadsheet ? "spreadsheet-parser" : "native-text",
+    promptTemplateId: "VC_EXTRACTION_PROMPT_V1",
+    promptSha256,
+    temperature: 0,
+    openRouterGenerationId: response.id || null,
+    promptTokens: response.usage?.prompt_tokens,
+    completionTokens: response.usage?.completion_tokens,
+    latencyMs,
+    processedAt: new Date().toISOString(),
+  };
+  (parsed as unknown as { _llmActor?: LlmExecutionActor })._llmActor = llmActor;
+
+  parsed.riskFlags = (parsed.riskFlags ?? []).map((rf) => ({
+    ...rf,
+    sourceFileName: rf.sourceFileName || fileName,
+  }));
+
+  const securityFlags = scanForPromptInjection(fileName, parsed, parsedSourceTextForVerification);
+  for (const sf of securityFlags) {
+    parsed.riskFlags.push(sf);
+  }
+
+  if (parsedSourceTextForVerification && parsed.traction?.verbatimQuote) {
+    if (verifyVerbatimQuoteInText(parsed.traction.verbatimQuote, parsedSourceTextForVerification) === false) {
+      parsed.riskFlags.push({
+        category: "UNANCHORED_EXTRACTION",
+        severity: 4,
+        description: `Traction quote "${parsed.traction.verbatimQuote.slice(0, 80)}" could not be verified verbatim in "${fileName}".`,
+        sourceFileName: fileName,
+        evidenceSnippet: parsed.traction.verbatimQuote,
+      });
+    }
+  }
+
+  return parsed;
 }

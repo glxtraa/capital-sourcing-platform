@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { TradeCorridor } from "./trade-extraction-schema";
+import { CriterionRuleProvenanceSchema } from "../provenance";
 
 export const TradeFunderType = z.enum([
   "COMMODITY_TRADE_FINANCE_BANK",
@@ -124,6 +125,9 @@ export const TradeFunderSchema = z.object({
   lastVerified: z.string().nullable().optional(),
   sources: z.array(z.string()).describe("Clickable URLs and primary references for funder data"),
   notes: z.string().nullable().optional(),
+
+  // Per-Criterion Source Quotes and Acquisition Traceability
+  criteriaProvenance: z.array(CriterionRuleProvenanceSchema).default([]).optional(),
 
   // DSL Validation Diagnostic Output
   validationDiagnostics: FunderValidationDiagnosticSchema.optional(),

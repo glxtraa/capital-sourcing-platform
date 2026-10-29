@@ -52,25 +52,39 @@ export function EditTradeDealModal({ deal, onClose }: EditTradeDealModalProps) {
     deal.parties.map((p) => ({
       legalName: p.legalName,
       role: p.role,
-      country: p.country ?? p.jurisdiction ?? "Global",
+      country: p.country ?? p.jurisdiction ?? "",
     })),
   );
 
-  const [contractLegs, setContractLegs] = useState(
+  const [contractLegs, setContractLegs] = useState<
+    Array<{
+      legRole: string;
+      incoterm: string;
+      goodsDescription: string;
+      pricingAmountUsd: number | string | null;
+      paymentTermsDays: number | string | null;
+    }>
+  >(
     deal.contractLegs.map((l) => ({
       legRole: l.legRole ?? l.legType ?? "SUPPLY_LEG",
-      incoterm: l.incoterm ?? "FOB",
-      goodsDescription: l.goodsDescription ?? l.commodityName ?? "Cargo",
-      pricingAmountUsd: l.pricingAmountUsd ?? l.amountUsd ?? 1000000,
-      paymentTermsDays: l.paymentTermsDays ?? l.tenorDays ?? 30,
+      incoterm: l.incoterm ?? "",
+      goodsDescription: l.goodsDescription ?? l.commodityName ?? "",
+      pricingAmountUsd: l.pricingAmountUsd ?? l.amountUsd ?? "",
+      paymentTermsDays: l.paymentTermsDays ?? l.tenorDays ?? "",
     })),
   );
 
-  const [financingAsks, setFinancingAsks] = useState(
+  const [financingAsks, setFinancingAsks] = useState<
+    Array<{
+      facilityStructure: string;
+      requestedAmountUsd: number | string | null;
+      tenorDays: number | string | null;
+    }>
+  >(
     deal.financingAsks.map((a) => ({
       facilityStructure: a.facilityStructure ?? a.instrument ?? "RECEIVABLES",
-      requestedAmountUsd: a.requestedAmountUsd ?? a.amountUsd ?? 1000000,
-      tenorDays: a.tenorDays ?? a.tenorDaysMax ?? 90,
+      requestedAmountUsd: a.requestedAmountUsd ?? a.amountUsd ?? "",
+      tenorDays: a.tenorDays ?? a.tenorDaysMax ?? "",
     })),
   );
 
@@ -78,7 +92,7 @@ export function EditTradeDealModal({ deal, onClose }: EditTradeDealModalProps) {
   const [error, setError] = useState<string | null>(null);
 
   function addParty() {
-    setParties((prev) => [...prev, { legalName: "New Entity", role: "BUYER", country: "Global" }]);
+    setParties((prev) => [...prev, { legalName: "", role: "BUYER", country: "" }]);
   }
 
   function addLeg() {
@@ -86,10 +100,10 @@ export function EditTradeDealModal({ deal, onClose }: EditTradeDealModalProps) {
       ...prev,
       {
         legRole: "SALES_LEG",
-        incoterm: "CIF",
-        goodsDescription: "Cargo",
-        pricingAmountUsd: 1500000,
-        paymentTermsDays: 60,
+        incoterm: "",
+        goodsDescription: "",
+        pricingAmountUsd: "" as unknown as number,
+        paymentTermsDays: "" as unknown as number,
       },
     ]);
   }
@@ -109,13 +123,13 @@ export function EditTradeDealModal({ deal, onClose }: EditTradeDealModalProps) {
           parties,
           contractLegs: contractLegs.map((l) => ({
             ...l,
-            pricingAmountUsd: Number(l.pricingAmountUsd),
-            paymentTermsDays: Number(l.paymentTermsDays),
+            pricingAmountUsd: l.pricingAmountUsd !== "" && !isNaN(Number(l.pricingAmountUsd)) ? Number(l.pricingAmountUsd) : null,
+            paymentTermsDays: l.paymentTermsDays !== "" && !isNaN(Number(l.paymentTermsDays)) ? Number(l.paymentTermsDays) : null,
           })),
           financingAsks: financingAsks.map((a) => ({
             ...a,
-            requestedAmountUsd: Number(a.requestedAmountUsd),
-            tenorDays: Number(a.tenorDays),
+            requestedAmountUsd: a.requestedAmountUsd !== "" && !isNaN(Number(a.requestedAmountUsd)) ? Number(a.requestedAmountUsd) : null,
+            tenorDays: a.tenorDays !== "" && !isNaN(Number(a.tenorDays)) ? Number(a.tenorDays) : null,
           })),
         }),
       });
@@ -255,15 +269,15 @@ export function EditTradeDealModal({ deal, onClose }: EditTradeDealModalProps) {
                 />
                 <input
                   type="number"
-                  value={l.pricingAmountUsd}
-                  onChange={(e) => setContractLegs((prev) => prev.map((item, idx) => idx === i ? { ...item, pricingAmountUsd: Number(e.target.value) } : item))}
+                  value={l.pricingAmountUsd ?? ""}
+                  onChange={(e) => setContractLegs((prev) => prev.map((item, idx) => idx === i ? { ...item, pricingAmountUsd: e.target.value === "" ? ("" as unknown as number) : Number(e.target.value) } : item))}
                   placeholder="Amount ($ USD)"
                   className="w-28 rounded border border-neutral-300 px-2 py-1 font-mono dark:border-neutral-700 dark:bg-neutral-900"
                 />
                 <input
                   type="number"
-                  value={l.paymentTermsDays}
-                  onChange={(e) => setContractLegs((prev) => prev.map((item, idx) => idx === i ? { ...item, paymentTermsDays: Number(e.target.value) } : item))}
+                  value={l.paymentTermsDays ?? ""}
+                  onChange={(e) => setContractLegs((prev) => prev.map((item, idx) => idx === i ? { ...item, paymentTermsDays: e.target.value === "" ? ("" as unknown as number) : Number(e.target.value) } : item))}
                   placeholder="Days"
                   className="w-16 rounded border border-neutral-300 px-2 py-1 font-mono dark:border-neutral-700 dark:bg-neutral-900"
                 />

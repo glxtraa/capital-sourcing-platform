@@ -108,20 +108,6 @@ async function runVCEndToEndTest() {
     industry: "AI / ML Infrastructure & Developer Tools",
     subIndustries: ["Model Serving APIs", "Vector Indexing"],
     competitors: [],
-    commercialProspects: [
-      {
-        name: "Datadog",
-        websiteUrl: "https://datadoghq.com",
-        category: "STRATEGIC_CHANNEL_PARTNER",
-        buyerPersona: "Head of Infrastructure Alliances",
-        useCaseFit: "Telemetry integration for model monitoring",
-        estimatedAcvTier: "100K_TO_250K",
-        strategicSynergy: "Co-selling to enterprise DevOps teams",
-        sourceUrl: "https://datadoghq.com",
-        sourceVerified: true,
-        sourceHttpStatus: 200,
-      },
-    ],
     traction: {
       arrUsd: 1200000,
       mrrUsd: 100000,
@@ -155,7 +141,6 @@ async function runVCEndToEndTest() {
     legalEntityJurisdiction: "Delaware (US)",
     subIndustries: [],
     competitors: [],
-    commercialProspects: [],
     founders: [],
     traction: {
       arrUsd: 1200000,
@@ -183,9 +168,7 @@ async function runVCEndToEndTest() {
     legalEntityJurisdiction: "Delaware (US)",
     subIndustries: [],
     competitors: [],
-    commercialProspects: [],
     founders: [],
-
     capTable: {
       foundersOwnershipPct: 80,
       investorOwnershipPct: 10,
@@ -285,6 +268,7 @@ async function runVCEndToEndTest() {
       competitorInvestments: (inv.competitorInvestments ?? []) as any,
       thesisMatchSummary: inv.thesisMatchSummary ?? null,
       sourceLinksAudit: (inv.sourceLinksAudit ?? []) as any,
+      criteriaProvenance: (inv.criteriaProvenance ?? null) as any,
       documentsRequired: (inv.documentsRequired || []).map((doc, idx) => ({
         id: `doc-req-${idx}`,
         investorId: inv.id,
@@ -302,6 +286,7 @@ async function runVCEndToEndTest() {
       mimeType: "application/pdf",
       sizeBytes: 4200000,
       documentTypes: ["VC_PITCH_DECK"],
+      taintOverride: null,
       extractedRaw: null,
       uploadedAt: new Date(),
     },
@@ -313,6 +298,7 @@ async function runVCEndToEndTest() {
       mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       sizeBytes: 850000,
       documentTypes: ["VC_FINANCIAL_MODEL"],
+      taintOverride: null,
       extractedRaw: null,
       uploadedAt: new Date(),
     },
@@ -324,6 +310,7 @@ async function runVCEndToEndTest() {
       mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       sizeBytes: 320000,
       documentTypes: ["VC_CAP_TABLE"],
+      taintOverride: null,
       extractedRaw: null,
       uploadedAt: new Date(),
     },

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { reconcileTradeExtractions } from "@/agents/trade/trade-reconciliation";
 import type { TradeDocumentExtraction } from "@/dsl/trade";
+import { getTaintPolicyMap } from "@/lib/taint-policy";
 
 export const maxDuration = 30;
 
@@ -13,7 +14,7 @@ export async function POST(
 
   const deal = await db.tradeDeal.findUnique({
     where: { id: dealId },
-    include: { documents: true },
+    include: { documents: true, riskFlags: true },
   });
 
   if (!deal) {
@@ -30,11 +31,20 @@ export async function POST(
     );
   }
 
-  const extractions = extractedDocs.map(
-    (d) => d.extractedRaw as unknown as TradeDocumentExtraction,
+  const policyMap = await getTaintPolicyMap("TRADE");
+  const existingFlagMap = new Map(
+    deal.riskFlags.map((rf) => [
+      `${rf.category}::${rf.description.trim().toLowerCase()}`,
+      rf,
+    ]),
   );
 
-  const reconciliation = reconcileTradeExtractions(deal.id, deal.name, extractions);
+  const extractions = extractedDocs.map((d) => ({
+    ...(d.extractedRaw as unknown as TradeDocumentExtraction),
+    _taintOverride: d.taintOverride,
+  }));
+
+  const reconciliation = reconcileTradeExtractions(deal.id, deal.name, extractions, policyMap);
 
   if (!reconciliation.tradeDealSpec) {
     return NextResponse.json({ error: "Failed to produce trade deal spec" }, { status: 500 });
@@ -88,9 +98,9 @@ export async function POST(
           contractReference: spec.supplyContract.contractReference,
           sellerName: spec.supplier.legalName,
           buyerName: spec.trader.legalName,
-          incoterm: spec.supplyContract.incoterm,
-          port: spec.supplyContract.port,
-          paymentType: spec.supplyContract.paymentType,
+          incoterm: spec.supplyContract.incoterm ?? "UNSPECIFIED",
+          port: spec.supplyContract.port ?? "UNSPECIFIED",
+          paymentType: spec.supplyContract.paymentType ?? "UNSPECIFIED",
           tenorDays: spec.supplyContract.tenorDays,
           amountUsd: spec.supplyContract.contractAmountUsd,
           commodityName: spec.commodity.name,
@@ -104,9 +114,9 @@ export async function POST(
           contractReference: spec.offtakeContract.contractReference,
           sellerName: spec.trader.legalName,
           buyerName: spec.buyer.legalName,
-          incoterm: spec.offtakeContract.incoterm,
-          port: spec.offtakeContract.port,
-          paymentType: spec.offtakeContract.paymentType,
+          incoterm: spec.offtakeContract.incoterm ?? "UNSPECIFIED",
+          port: spec.offtakeContract.port ?? "UNSPECIFIED",
+          paymentType: spec.offtakeContract.paymentType ?? "UNSPECIFIED",
           tenorDays: spec.offtakeContract.tenorDays,
           amountUsd: spec.offtakeContract.contractAmountUsd,
           commodityName: spec.commodity.name,
@@ -117,15 +127,27 @@ export async function POST(
       ],
     });
 
-    // 4. Persist risk flags
+    // 4. Persist risk flags (preserving human verification status)
     if (spec.riskFlags.length > 0) {
       await tx.tradeRiskFlag.createMany({
-        data: spec.riskFlags.map((rf) => ({
-          dealId,
-          category: rf.category,
-          severity: rf.severity,
-          description: rf.description,
-        })),
+        data: spec.riskFlags.map((rf) => {
+          const prev = existingFlagMap.get(
+            `${rf.category}::${rf.description.trim().toLowerCase()}`,
+          );
+          return {
+            dealId,
+            category: rf.category,
+            severity: rf.severity,
+            description: rf.description,
+            sourceFileName: rf.sourceFileName ?? prev?.sourceFileName ?? null,
+            evidenceSnippet: rf.evidenceSnippet ?? prev?.evidenceSnippet ?? null,
+            resolved: prev?.resolved ?? false,
+            verificationStatus: prev?.verificationStatus ?? "UNVERIFIED",
+            verifiedBy: prev?.verifiedBy ?? null,
+            verifiedAt: prev?.verifiedAt ?? null,
+            verificationNotes: prev?.verificationNotes ?? null,
+          };
+        }),
       });
     }
 

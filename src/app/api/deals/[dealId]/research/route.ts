@@ -27,7 +27,10 @@ import { researchProviderFindings, structureProviderFindings } from "@/agents/re
 export const maxDuration = 300;
 
 const BodySchema = z.discriminatedUnion("step", [
-  z.object({ step: z.literal("search") }),
+  z.object({
+    step: z.literal("search"),
+    funderHint: z.string().optional(),
+  }),
   z.object({
     step: z.literal("structure"),
     runId: z.string(),
@@ -55,10 +58,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ dealId:
   if (body.step === "search") {
     const { dealInput, askInput, currency } = buildMatchInputs(deal.parties, deal.financingAsks);
     const hint =
-      `A capital provider for a ${askInput.structureType} deal, ` +
+      body.funderHint ??
+      (`A capital provider for a ${askInput.structureType} deal, ` +
       `borrower jurisdiction ${dealInput.borrowerJurisdiction ?? "unknown"}, ` +
       `obligor jurisdiction ${dealInput.obligorJurisdiction ?? "unknown"}, ` +
-      `ticket size ~${askInput.amount ?? "unknown"} ${currency ?? ""}`;
+      `ticket size ~${askInput.amount ?? "unknown"} ${currency ?? ""}`);
     const context = `Deal "${deal.name}" — the current provider database has zero eligible providers for it.`;
 
     await db.deal.update({ where: { id: dealId }, data: { status: "RESEARCHING" } });

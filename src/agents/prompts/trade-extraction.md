@@ -56,5 +56,5 @@ Identify if the document corresponds to one of the three primary trade corridors
 ## Hard Rules
 
 1. **Extract only from THIS document**: Cross-document reconciliation happens in the next agent pass.
-2. **Never fabricate specifications or numbers**: If calorific value, moisture, or laycan window is not stated, leave it null and list it in `openQuestions`.
+2. **Never fabricate specifications, incoterms, or numbers**: If calorific value, moisture, incoterm, port, or laycan window is not stated, leave it null and list it in `openQuestions`. Do not guess or default to FOB, CFR, or default tolerances.
 3. **Bilingual documents**: Read both language versions (e.g. English/Indonesian, English/Chinese, English/Spanish) and note any governing language clause.

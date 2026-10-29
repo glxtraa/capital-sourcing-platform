@@ -67,9 +67,18 @@ export interface FinancingAskProvenance {
   };
 }
 
+function partyNamesMatch(a?: string | null, b?: string | null): boolean {
+  if (!a || !b) return false;
+  const na = a.trim().toLowerCase();
+  const nb = b.trim().toLowerCase();
+  if (na === nb) return true;
+  const cleanA = na.replace(/\b(inc|ltd|limited|llc|corp|corporation|pte|gmbh|sa|co)\b\.?/gi, "").trim();
+  const cleanB = nb.replace(/\b(inc|ltd|limited|llc|corp|corporation|pte|gmbh|sa|co)\b\.?/gi, "").trim();
+  return cleanA === cleanB || (cleanA.length > 2 && cleanB.length > 2 && (cleanA.includes(cleanB) || cleanB.includes(cleanA)));
+}
+
 export function computePartyProvenance(party: Party, documents: UploadedDocument[]): PartyProvenance {
   const parsedDocs = parseDocExtractions(documents);
-  const normTarget = party.legalName.trim().toLowerCase();
 
   const docsSet = new Set<string>();
   const roleSet = new Set<string>();
@@ -80,7 +89,7 @@ export function computePartyProvenance(party: Party, documents: UploadedDocument
   for (const { fileName, extractions } of parsedDocs) {
     for (const ext of extractions) {
       for (const p of ext.parties ?? []) {
-        if (p.legalName?.trim().toLowerCase() === normTarget) {
+        if (partyNamesMatch(p.legalName, party.legalName)) {
           docsSet.add(fileName);
           if (p.role === party.role) roleSet.add(fileName);
           if (party.jurisdiction && p.jurisdiction === party.jurisdiction) jurisdictionSet.add(fileName);

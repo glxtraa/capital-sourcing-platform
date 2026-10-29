@@ -387,88 +387,97 @@ export async function researchProspectContacts(
   const resultsByProspectId: Record<string, StartupProspectContact[]> = {};
   const allContacts: StartupProspectContact[] = [];
 
-  // Try research for each target account
-  for (const target of params.targets) {
-    let contactsForTarget: StartupProspectContact[] = [];
+  // Research target accounts concurrently (capped at 5 at a time for speed & resilience)
+  const targetChunks: ProspectAccountTarget[][] = [];
+  const chunkSize = 4;
+  for (let i = 0; i < params.targets.length; i += chunkSize) {
+    targetChunks.push(params.targets.slice(i, i + chunkSize));
+  }
 
-    try {
-      const client = getOpenRouterClient();
-      const targetQuery = `${target.name} ${target.buyerPersona || "Chief Sustainability Officer"} contact leadership LinkedIn`;
+  for (const chunk of targetChunks) {
+    await Promise.all(
+      chunk.map(async (target) => {
+        let contactsForTarget: StartupProspectContact[] = [];
 
-      const searchParams: ChatCompletionCreateParamsNonStreaming & { plugins?: readonly unknown[] } = {
-        model: CONTACT_MODEL,
-        plugins: webSearchPlugin(4),
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are an Executive Talent, Corporate Procurement & B2B GTM Intelligence Agent. " +
-              "Your task is to identify real current decision-makers and executives matching specific buyer personas at target enterprise corporate accounts. " +
-              "Provide real executive names, exact titles, department, location, LinkedIn link or search, corporate email format, and a tailored outreach hook.",
-          },
-          {
-            role: "user",
-            content:
-              `Identify the real executive / decision maker at "${target.name}" (${target.websiteUrl || ""}) ` +
-              `who matches the persona "${target.buyerPersona || "VP of Sustainability / Procurement"}". ` +
-              `The outreach is from "${params.companyName}" (${resolvedIndustry}, ${subIndString}), which provides: ${target.useCaseFit || "enterprise solutions"}. ` +
-              `Return their real name, official corporate title, LinkedIn URL, estimated email pattern, and a high-converting personalized outreach angle.`,
-          },
-        ],
-      };
+        try {
+          const client = getOpenRouterClient();
 
-      let searchFindings = "";
-      try {
-        const searchRes = await client.chat.completions.create(searchParams, {
-          signal: AbortSignal.timeout(25_000),
-          maxRetries: 0,
-        });
-        searchFindings = searchRes.choices[0]?.message?.content || "";
-      } catch (searchErr) {
-        console.warn(`Web search for contact at ${target.name} encountered an issue:`, searchErr);
-      }
-
-      const structurePrompt = searchFindings
-        ? `Executive research findings for ${target.name} (${target.buyerPersona}):\n\n${searchFindings}`
-        : `Map 1 to 2 real executive contacts at "${target.name}" matching persona "${target.buyerPersona}". Provide real name, official title, LinkedIn link, corporate email pattern, and personalized outreach angle for ${params.companyName}.`;
-
-      try {
-        const structureRes = await client.chat.completions.create(
-          {
+          const searchParams: ChatCompletionCreateParamsNonStreaming & { plugins?: readonly unknown[] } = {
             model: CONTACT_MODEL,
-            response_format: RESPONSE_FORMAT,
+            plugins: webSearchPlugin(3),
             messages: [
               {
                 role: "system",
                 content:
-                  "Extract structured executive decision-maker contacts for the company. Ensure full names and titles are accurate and realistic.",
+                  "You are an Executive Talent, Corporate Procurement & B2B GTM Intelligence Agent. " +
+                  "Your task is to identify real current decision-makers and executives matching specific buyer personas at target enterprise corporate accounts. " +
+                  "Provide real executive names, exact titles, department, location, LinkedIn link or search, corporate email format, and a tailored outreach hook.",
               },
-              { role: "user", content: structurePrompt },
+              {
+                role: "user",
+                content:
+                  `Identify the real executive / decision maker at "${target.name}" (${target.websiteUrl || ""}) ` +
+                  `who matches the persona "${target.buyerPersona || "VP of Sustainability / Procurement"}". ` +
+                  `The outreach is from "${params.companyName}" (${resolvedIndustry}, ${subIndString}), which provides: ${target.useCaseFit || "enterprise solutions"}. ` +
+                  `Return their real name, official corporate title, LinkedIn URL, estimated email pattern, and a high-converting personalized outreach angle.`,
+              },
             ],
-          },
-          { signal: AbortSignal.timeout(25_000) },
-        );
+          };
 
-        const structuredContent = structureRes.choices[0]?.message?.content || "{}";
-        const parsed = parseStructuredJson(structuredContent, ProspectContactsResponseSchema);
-        if (parsed.contacts && parsed.contacts.length > 0) {
-          contactsForTarget = parsed.contacts;
+          let searchFindings = "";
+          try {
+            const searchRes = await client.chat.completions.create(searchParams, {
+              signal: AbortSignal.timeout(15_000),
+              maxRetries: 0,
+            });
+            searchFindings = searchRes.choices[0]?.message?.content || "";
+          } catch (searchErr) {
+            console.warn(`Web search for contact at ${target.name} encountered an issue:`, searchErr);
+          }
+
+          const structurePrompt = searchFindings
+            ? `Executive research findings for ${target.name} (${target.buyerPersona}):\n\n${searchFindings}`
+            : `Map 1 to 2 real executive contacts at "${target.name}" matching persona "${target.buyerPersona}". Provide real name, official title, LinkedIn link, corporate email pattern, and personalized outreach angle for ${params.companyName}.`;
+
+          try {
+            const structureRes = await client.chat.completions.create(
+              {
+                model: CONTACT_MODEL,
+                response_format: RESPONSE_FORMAT,
+                messages: [
+                  {
+                    role: "system",
+                    content:
+                      "Extract structured executive decision-maker contacts for the company. Ensure full names and titles are accurate and realistic.",
+                  },
+                  { role: "user", content: structurePrompt },
+                ],
+              },
+              { signal: AbortSignal.timeout(15_000) },
+            );
+
+            const structuredContent = structureRes.choices[0]?.message?.content || "{}";
+            const parsed = parseStructuredJson(structuredContent, ProspectContactsResponseSchema);
+            if (parsed.contacts && parsed.contacts.length > 0) {
+              contactsForTarget = parsed.contacts;
+            }
+          } catch (structureErr) {
+            console.warn(`Structuring contact for ${target.name} failed, falling back to verified domain data:`, structureErr);
+            contactsForTarget = getDomainFallbackContacts(target, params.companyName, params.primaryVertical, resolvedIndustry);
+          }
+        } catch {
+          // Fallback to verified domain directory
+          contactsForTarget = getDomainFallbackContacts(target, params.companyName, params.primaryVertical, resolvedIndustry);
         }
-      } catch (structureErr) {
-        console.warn(`Structuring contact for ${target.name} failed, falling back to verified domain data:`, structureErr);
-        contactsForTarget = getDomainFallbackContacts(target, params.companyName, params.primaryVertical, resolvedIndustry);
-      }
-    } catch {
-      // Fallback to verified domain directory
-      contactsForTarget = getDomainFallbackContacts(target, params.companyName, params.primaryVertical, resolvedIndustry);
-    }
 
-    if (!contactsForTarget || contactsForTarget.length === 0) {
-      contactsForTarget = getDomainFallbackContacts(target, params.companyName, params.primaryVertical, resolvedIndustry);
-    }
+        if (!contactsForTarget || contactsForTarget.length === 0) {
+          contactsForTarget = getDomainFallbackContacts(target, params.companyName, params.primaryVertical, resolvedIndustry);
+        }
 
-    resultsByProspectId[target.id] = contactsForTarget;
-    allContacts.push(...contactsForTarget);
+        resultsByProspectId[target.id] = contactsForTarget;
+        allContacts.push(...contactsForTarget);
+      })
+    );
   }
 
   // Link verification for source links and websites

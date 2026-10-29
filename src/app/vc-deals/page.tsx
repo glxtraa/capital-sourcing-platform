@@ -97,7 +97,7 @@ export default async function VcDealsPage() {
         <div className="grid gap-3">
           {startupDeals.map((deal) => {
             const ask = deal.financingAsks[0];
-            const targetRaise = ask?.targetRaiseUsd ?? 1500000;
+            const targetRaise = ask?.targetRaiseUsd ?? null;
             const valuationCap = ask?.valuationCapUsd;
 
             return (
@@ -110,12 +110,14 @@ export default async function VcDealsPage() {
                       </p>
                       <Badge tone="green">{STAGE_LABELS[deal.stage] ?? deal.stage}</Badge>
                       <Badge tone="blue">{SECTOR_LABELS[deal.primaryVertical] ?? deal.primaryVertical}</Badge>
-                      <span className="text-xs text-neutral-400">· {deal.legalEntityJurisdiction}</span>
+                      {deal.legalEntityJurisdiction && (
+                        <span className="text-xs text-neutral-400">· {deal.legalEntityJurisdiction}</span>
+                      )}
                     </div>
 
                     <div className="mt-1.5 flex flex-wrap items-center gap-3 text-xs text-neutral-500">
                       <span className="font-mono font-medium text-emerald-700 dark:text-emerald-400">
-                        Target: ${targetRaise.toLocaleString()} USD
+                        Target: {targetRaise ? `$${targetRaise.toLocaleString()} USD` : "Unspecified"}
                       </span>
                       {valuationCap && (
                         <span>Cap: ${valuationCap.toLocaleString()} USD</span>

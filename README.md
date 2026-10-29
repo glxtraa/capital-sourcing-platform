@@ -258,20 +258,15 @@ Two fixes, do both, for every case above:
 Also worth a once-over: delete any leftover `ANTHROPIC_API_KEY`/`ANTHROPIC_MODEL` vars from
 before this app moved to OpenRouter — they're unused now.
 
-## Keeping strangers from burning your API budget
+## Workspace security: Google Chat Webhook OTP Gate & Master Password
 
-This app is meant to be deployed publicly on Vercel, and nearly every page/API route can
-trigger a paid OpenRouter call or a Blob write — there's no user accounts or billing limits
-standing between a random visitor and your usage. Set `SITE_PASSWORD` (Vercel → Settings →
-Environment Variables) and every route requires that password once, stored as a cookie for 30
-days (`src/proxy.ts` + `src/lib/site-auth.ts`). Leave it unset and the app is fully public,
-exactly as before — nothing breaks either way, since the gate is a no-op without it.
+This app protects your deal pipeline, confidential counterparty terms, and LLM budget using a two-factor **Google Chat Webhook OTP** gate:
 
-This is intentionally NOT a real auth system — one shared password, not per-user accounts, no
-password reset flow, nothing tied to `orgId` (that's still the `demo-org` stub in
-`src/lib/auth.ts`, a separate and unrelated gap). It's sized to the actual problem: stop a
-stranger who stumbles on the URL from running up your bill, not protect genuinely confidential
-documents from a determined attacker.
+1. **Google Chat 2FA Gate (`GOOGLE_CHAT_WEBHOOK_URL`)**: Set your Google Chat incoming webhook URL (Vercel → Settings → Environment Variables). When users hit `/login`, clicking "Send 6-Digit OTP to Google Chat" generates a cryptographically random 6-digit numeric OTP, computes a salted SHA-256 hash inside a signed, tamper-proof `otp_challenge` cookie (expires in 5 minutes), and posts the verification code directly to your team's Google Chat space.
+2. **Timing-Safe Constant-Time Verification**: Submitting the 6 digits tests against the challenge cookie using constant-time comparison. Upon success, a 12-hour signed `otp_session` cookie is issued, unlocking all asset workspaces and API routes.
+3. **Master Password Fallback (`SITE_PASSWORD`)**: Allows team members to unlock the platform directly using the master site password if Google Chat is temporarily unreachable or undergoing maintenance.
+4. **Local Dev Console Mode**: In local development (`NODE_ENV !== 'production'`), if `GOOGLE_CHAT_WEBHOOK_URL` is omitted, the 6-digit code is printed directly to the server terminal console (`🔐 [LOCAL DEV OTP GATE] Verification Code: XXXXXX`) so developers never get locked out.
+5. **Session Lock**: Click the Lock icon in the top navigation bar at any time to invalidate cookies and lock the platform.
 
 ## Why this is its own folder/repo
 

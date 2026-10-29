@@ -12,6 +12,9 @@ import {
   TRADE_DOCUMENT_TAXONOMY,
   type TradeDocumentExtraction,
 } from "@/dsl/trade";
+import { resolveDocumentTaint, type LlmExecutionActor } from "@/dsl/provenance";
+import { scanForPromptInjection } from "@/lib/provenance-verifier";
+import { computePromptSha256, savePromptSnapshot } from "@/lib/prompt-cache";
 
 const SYSTEM_PROMPT = readFileSync(
   join(process.cwd(), "src/agents/prompts/trade-extraction.md"),
@@ -41,6 +44,7 @@ export async function extractFromTradeDocument(
 ): Promise<TradeDocumentExtraction> {
   const client = getOpenRouterClient();
   const isPdf = mimeType === "application/pdf";
+  const rawTextForVerification = isPdf ? null : fileBuffer.toString("utf-8");
 
   const userMessage = (
     isPdf
@@ -62,7 +66,7 @@ export async function extractFromTradeDocument(
         }
       : {
           role: "user",
-          content: `Document filename: ${fileName}\n\nExtract trade finance parameters per the system prompt.\n\nRespond ONLY with a single valid JSON object matching the TradeDocumentExtraction schema.\n\n${TAXONOMY_HINT}\n\n${fileBuffer.toString("utf-8")}`,
+          content: `Document filename: ${fileName}\n\nExtract trade finance parameters per the system prompt.\n\nRespond ONLY with a single valid JSON object matching the TradeDocumentExtraction schema.\n\n${TAXONOMY_HINT}\n\n${rawTextForVerification}`,
         }
   ) as ChatCompletionMessageParam;
 
@@ -94,7 +98,23 @@ export async function extractFromTradeDocument(
     };
 
     try {
+      const startTime = Date.now();
+      const promptSha256 = await computePromptSha256(SYSTEM_PROMPT, TAXONOMY_HINT);
+
+      // Save prompt snapshot deduplicated once
+      await savePromptSnapshot({
+        sha256: promptSha256,
+        templateId: "TRADE_EXTRACTION_PROMPT_V2",
+        agentPersonaId: "minato",
+        agentDisplayName: "Minato (湊) — Maritime & Trade Parser",
+        systemPrompt: SYSTEM_PROMPT,
+        taxonomyOrSchemaHint: TAXONOMY_HINT,
+        modelSlug: model,
+        firstRecordedAt: new Date().toISOString(),
+      });
+
       const response: ChatCompletion = await client.chat.completions.create(params);
+      const latencyMs = Date.now() - startTime;
       const content = response.choices[0]?.message?.content;
       if (!content) {
         throw new Error(
@@ -102,12 +122,44 @@ export async function extractFromTradeDocument(
         );
       }
       const parsed = parseStructuredJson(content, TradeDocumentExtractionSchema);
+      const taint = resolveDocumentTaint(parsed.documentTypes);
+
+      const llmActor: LlmExecutionActor = {
+        actorType: "LLM_AGENT",
+        agentPersonaId: "minato",
+        agentDisplayName: "Minato (湊) — Maritime & Trade Parser",
+        processStage: "SINGLE_DOC_EXTRACTION",
+        modelSlug: response.model || model,
+        ocrEngine: isPdf ? (pdfEngine || "mistral-ocr") : "native-text",
+        promptTemplateId: "TRADE_EXTRACTION_PROMPT_V2",
+        promptSha256,
+        temperature: 0,
+        openRouterGenerationId: response.id || null,
+        promptTokens: response.usage?.prompt_tokens,
+        completionTokens: response.usage?.completion_tokens,
+        latencyMs,
+        processedAt: new Date().toISOString(),
+      };
+      (parsed as unknown as { _llmActor?: LlmExecutionActor })._llmActor = llmActor;
+
       parsed.extractionProvenance = {
         sourceFileName: fileName,
         extractedAt: new Date().toISOString(),
-        modelUsed: model,
+        modelUsed: response.model || model,
         ocrEngineUsed: pdfEngine ?? "none",
+        taint,
+        verbatimQuote: parsed.extractionProvenance?.verbatimQuote ?? null,
+        pageOrSheet: parsed.extractionProvenance?.pageOrSheet ?? null,
+        quoteVerifiedInText: isPdf ? null : true,
       };
+      parsed.riskFlags = (parsed.riskFlags ?? []).map((rf) => ({
+        ...rf,
+        sourceFileName: rf.sourceFileName || fileName,
+      }));
+      const securityFlags = scanForPromptInjection(fileName, parsed, rawTextForVerification);
+      for (const sf of securityFlags) {
+        parsed.riskFlags.push(sf);
+      }
       return parsed;
     } catch (err) {
       lastError = err;

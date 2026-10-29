@@ -2,23 +2,13 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { mergeExtractions } from "@/agents/merge";
 import { DocumentExtractionSchema, type DocumentExtraction } from "@/dsl/schema";
+import { getTaintPolicyMap } from "@/lib/taint-policy";
 
 /**
  * Finalizes extraction for a deal: merges every document's already-stored
  * `extractedFieldsRaw` (written by POST .../documents/:documentId/extract,
  * one call per document) into the deal-level Party/FinancingAsk/RiskFlag
- * rows. Deliberately does NO LLM/OCR work itself -- that used to happen
- * here directly (via Promise.all over every document in one request), which
- * could exceed Vercel Hobby's 60s hard function-duration cap on a real
- * multi-document, heavily-scanned deal and leave the deal stuck in
- * EXTRACTING with no way to recover. Splitting per-document extraction into
- * its own route means THIS route only ever does a DB read + a deterministic
- * in-memory merge + a DB write, so it should never come close to timing out
- * on any plan.
- *
- * Returns 409 if any document hasn't been extracted yet -- the caller
- * (UploadDropzone / DealActions) is expected to have called the per-document
- * route for every document first.
+ * rows.
  */
 export const maxDuration = 30;
 
@@ -51,10 +41,16 @@ export async function POST(_req: Request, { params }: { params: Promise<{ dealId
   const startedAt = new Date();
 
   try {
-    const extractions: DocumentExtraction[] = [];
+    const policyMap = await getTaintPolicyMap("INVOICE");
+    const existingFlagMap = new Map(
+      deal.riskFlags.map((rf) => [
+        `${rf.category}::${rf.description.trim().toLowerCase()}`,
+        rf,
+      ]),
+    );
 
-    // Include any previously saved deal-level datapoints first so re-running
-    // extraction never drops a previously extracted party, ask, or risk flag.
+    const extractions: Array<DocumentExtraction & { _taintOverride?: string | null; _fileName?: string }> = [];
+
     if (deal.parties.length > 0 || deal.financingAsks.length > 0 || deal.riskFlags.length > 0) {
       const prevQuestions = deal.reviewerNotes
         ? deal.reviewerNotes
@@ -93,6 +89,8 @@ export async function POST(_req: Request, { params }: { params: Promise<{ dealId
           category: r.category,
           severity: r.severity,
           description: r.description,
+          sourceFileName: r.sourceFileName,
+          evidenceSnippet: r.evidenceSnippet,
         })),
         documentTypes: [],
         openQuestions: prevQuestions,
@@ -103,18 +101,14 @@ export async function POST(_req: Request, { params }: { params: Promise<{ dealId
       const extraction = DocumentExtractionSchema.parse(doc.extractedFieldsRaw);
       extractions.push({
         ...extraction,
+        _taintOverride: doc.taintOverride,
+        _fileName: doc.fileName,
         parties: extraction.parties.map((p) => ({ ...p, sourceDocuments: [doc.fileName] })),
       });
     }
 
-    const merged = mergeExtractions(extractions);
+    const merged = mergeExtractions(extractions, policyMap);
 
-    // Fields are mapped explicitly rather than spread: the Zod DSL carries
-    // fields the Prisma models have no column for (e.g. FinancingAsk's
-    // structureTypeConfidence, Party's sourceDocuments), and spreading one
-    // into createMany throws "Unknown argument" -- which stayed hidden until
-    // a document yielded its first financing ask, since pure sale/purchase
-    // contracts produce none and createMany([]) never validates a field.
     await db.$transaction([
       db.party.deleteMany({ where: { dealId } }),
       db.financingAsk.deleteMany({ where: { dealId } }),
@@ -149,12 +143,24 @@ export async function POST(_req: Request, { params }: { params: Promise<{ dealId
         })),
       }),
       db.riskFlag.createMany({
-        data: merged.riskFlags.map((r) => ({
-          dealId,
-          category: r.category,
-          severity: r.severity,
-          description: r.description,
-        })),
+        data: merged.riskFlags.map((r) => {
+          const prev = existingFlagMap.get(
+            `${r.category}::${r.description.trim().toLowerCase()}`,
+          );
+          return {
+            dealId,
+            category: r.category,
+            severity: r.severity,
+            description: r.description,
+            sourceFileName: r.sourceFileName ?? prev?.sourceFileName ?? null,
+            evidenceSnippet: r.evidenceSnippet ?? prev?.evidenceSnippet ?? null,
+            verificationStatus: prev?.verificationStatus ?? "UNVERIFIED",
+            verifiedBy: prev?.verifiedBy ?? null,
+            verifiedAt: prev?.verifiedAt ?? null,
+            verificationNotes: prev?.verificationNotes ?? null,
+            resolvedAt: prev?.resolvedAt ?? null,
+          };
+        }),
       }),
       db.deal.update({
         where: { id: dealId },

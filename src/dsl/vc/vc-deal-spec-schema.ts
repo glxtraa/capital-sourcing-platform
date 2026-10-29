@@ -18,9 +18,9 @@ export const StartupDealSpecSchema = z.object({
   companyName: z.string(),
   stage: StartupStageSchema,
   primaryVertical: StartupSectorSchema,
-  industry: z.string().default("Technology / B2B SaaS"),
+  industry: z.string().nullable().optional(),
   subIndustries: z.array(z.string()).default([]),
-  legalEntityJurisdiction: StartupJurisdictionSchema.default("Delaware (US)"),
+  legalEntityJurisdiction: StartupJurisdictionSchema.nullable().optional(),
 
   founders: z.array(FounderExtractionSchema),
   competitors: z.array(StartupCompetitorExtractionSchema).default([]),
@@ -33,7 +33,7 @@ export const StartupDealSpecSchema = z.object({
     dataRoomDiscrepancies: z.array(z.string()).default([]),
     metricsValidatedAgainstFinancialModel: z.boolean().default(false),
     capTableReconciled: z.boolean().default(false),
-    impliedRunwayExtensionMonths: z.number().default(18),
+    impliedRunwayExtensionMonths: z.number().nullable().optional(),
     impliedPostMoneyValuationUsd: z.number().nullable().optional(),
     founderDilutionPct: z.number().nullable().optional(),
   }),
@@ -74,4 +74,3 @@ export const StartupDealSpecSchema = z.object({
   readyForMatching: z.boolean(),
 });
 export type StartupDealSpec = z.infer<typeof StartupDealSpecSchema>;
-

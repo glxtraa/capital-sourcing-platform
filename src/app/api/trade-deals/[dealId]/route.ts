@@ -177,7 +177,6 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ dealId
             isTier1: m.isTier1,
           })),
           ...matchResult.modularMatches.supplierLegMatches
-            .filter((m) => m.verdict === "POSSIBLE")
             .map((m) => ({
               dealId,
               funderId: m.funderId,
@@ -187,7 +186,6 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ dealId
               isTier1: false,
             })),
           ...matchResult.modularMatches.traderLegMatches
-            .filter((m) => m.verdict === "POSSIBLE")
             .map((m) => ({
               dealId,
               funderId: m.funderId,
@@ -197,7 +195,6 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ dealId
               isTier1: false,
             })),
           ...matchResult.modularMatches.buyerLegMatches
-            .filter((m) => m.verdict === "POSSIBLE")
             .map((m) => ({
               dealId,
               funderId: m.funderId,
@@ -208,9 +205,22 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ dealId
             })),
         ];
 
-        const uniqueMatches = Array.from(
-          new Map(matchesToCreate.map((item) => [item.funderId, item])).values(),
-        );
+        // Deduplicate by funderId (prioritize GOOD > POSSIBLE > EXCLUDED, and Umbrella > Modular)
+        const scoreVerdict = (v: string) => (v === "GOOD" ? 3 : v === "POSSIBLE" ? 2 : 1);
+        const matchMap = new Map<string, typeof matchesToCreate[0]>();
+        for (const item of matchesToCreate) {
+          const existing = matchMap.get(item.funderId);
+          if (!existing) {
+            matchMap.set(item.funderId, item);
+          } else {
+            const scoreExisting = scoreVerdict(existing.verdict) + (existing.isUmbrella ? 1 : 0);
+            const scoreNew = scoreVerdict(item.verdict) + (item.isUmbrella ? 1 : 0);
+            if (scoreNew > scoreExisting) {
+              matchMap.set(item.funderId, item);
+            }
+          }
+        }
+        const uniqueMatches = Array.from(matchMap.values());
 
         await db.$transaction(async (tx) => {
           await tx.tradeFunderMatchModel.deleteMany({ where: { dealId } });

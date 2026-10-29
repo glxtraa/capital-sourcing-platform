@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle, Badge, Button } from "@/components/ui/primitives";
 import { VcUploadDropzone } from "@/components/VcUploadDropzone";
@@ -45,6 +45,20 @@ import { EditCapTableModal, SafeHolderData, CommonHolderData } from "@/component
 import { CachedPageModal } from "@/components/research/CachedPageModal";
 import { VcFunderDealResearchCard } from "@/components/VcFunderDealResearchCard";
 import { AgentDslModal, MissingParameterInfo } from "@/components/AgentDslModal";
+import { DealPipelineStepper } from "@/components/DealPipelineStepper";
+import { TaintPolicyDrawer } from "@/components/TaintPolicyDrawer";
+import { RiskFlagVerificationCard } from "@/components/RiskFlagVerificationCard";
+import { isBlockingRiskFlag, resolveDocumentTaint } from "@/dsl/provenance";
+import { DealExecutionTimeline } from "@/components/DealExecutionTimeline";
+import { TabDslInspectorPanel } from "@/components/dsl/TabDslInspectorPanel";
+import { VC_DEAL_SPEC_FIELDS } from "@/dsl/field-documentation";
+import { TabSectionNav, CardNextSectionCue, scrollToSectionWithHighlight } from "@/components/navigation/TabSectionNav";
+import { BatchBackerResearchModal } from "@/components/vc/BatchBackerResearchModal";
+import { checkFundResearchStatus } from "@/components/vc/fund-research-utils";
+import { ProvenancePill, ProvenanceXRayDrawer, DataLineageMatrix } from "@/components/provenance";
+import { synthesizeFieldLineageFromDsl, type FieldLineageNode } from "@/dsl/provenance";
+import { MatchCriteriaAndDocsChecklist } from "@/components/MatchCriteriaAndDocsChecklist";
+import { evaluateStartupInvestorCriteria } from "@/lib/vc-matching";
 
 interface VcDealWorkspaceTabsProps {
   deal: {
@@ -56,7 +70,7 @@ interface VcDealWorkspaceTabsProps {
     subIndustries?: string[];
     targetCustomerProfile?: string | null;
     businessModel?: string | null;
-    legalEntityJurisdiction: string;
+    legalEntityJurisdiction: string | null;
     status: string;
     dealSpecJson?: any;
     competitors?: Array<{
@@ -111,6 +125,7 @@ interface VcDealWorkspaceTabsProps {
       sizeBytes: number;
       documentTypes: string[];
       extractedRaw: any;
+      taintOverride?: string | null;
       uploadedAt: Date | string;
     }>;
     founders: Array<{
@@ -125,10 +140,10 @@ interface VcDealWorkspaceTabsProps {
     }>;
     capTable: {
       id: string;
-      foundersOwnershipPct: number;
-      investorOwnershipPct: number;
-      optionPoolPct: number;
-      safesNotesOutstandingUsd: number;
+      foundersOwnershipPct: number | null;
+      investorOwnershipPct: number | null;
+      optionPoolPct: number | null;
+      safesNotesOutstandingUsd: number | null;
       safeHoldersJson?: any;
       commonHoldersJson?: any;
       hasDeadEquity: boolean;
@@ -136,11 +151,11 @@ interface VcDealWorkspaceTabsProps {
     } | null;
     financingAsks: Array<{
       id: string;
-      targetRaiseUsd: number;
-      instrumentType: string;
+      targetRaiseUsd: number | null;
+      instrumentType: string | null;
       valuationCapUsd: number | null;
       discountPct: number | null;
-      plannedRunwayMonths: number;
+      plannedRunwayMonths: number | null;
       leadCommitted: boolean;
       committedAmountUsd: number;
     }>;
@@ -150,6 +165,12 @@ interface VcDealWorkspaceTabsProps {
       severity: number;
       description: string;
       resolved: boolean;
+      verificationStatus?: string | null;
+      verifiedBy?: string | null;
+      verifiedAt?: Date | string | null;
+      verificationNotes?: string | null;
+      sourceFileName?: string | null;
+      evidenceSnippet?: string | null;
     }>;
     matches: Array<{
       id: string;
@@ -199,13 +220,16 @@ interface VcDealWorkspaceTabsProps {
       createdAt: Date | string;
     }>;
   };
+  allInvestors?: Array<{ id: string; name: string; type?: string }>;
 }
 
 function MatchConflictAndAuditDetails({
   match,
+  deal,
   onOpenSnapshot,
 }: {
   match: any;
+  deal?: any;
   onOpenSnapshot?: (url: string) => void;
 }) {
   const auditLinks = Array.isArray(match.sourceLinksAudit) ? match.sourceLinksAudit : [];
@@ -522,16 +546,282 @@ function MatchConflictAndAuditDetails({
           </div>
         </div>
       )}
+
+      {/* Match Criteria & Documents Checklist */}
+      {deal && (
+        <MatchCriteriaAndDocsChecklist
+          criteria={evaluateStartupInvestorCriteria(investor, {
+            stage: deal.stage,
+            primaryVertical: deal.primaryVertical,
+            industry: deal.industry,
+            legalEntityJurisdiction: deal.legalEntityJurisdiction,
+            tractionArrUsd: deal.dealSpecJson?.traction?.arrUsd ?? null,
+            competitors: deal.competitors,
+            companyName: deal.companyName,
+          })}
+          documentsRequired={investor.documentsRequired || []}
+          uploadedDocs={deal.documents || []}
+          assetLabel="investor"
+          funderName={investor.name}
+          defaultOpen={match.verdict === "EXCLUDED"}
+        />
+      )}
     </div>
   );
 }
 
-export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
+export function VcDealWorkspaceTabs({ deal, allInvestors = [] }: VcDealWorkspaceTabsProps) {
   const router = useRouter();
-  const [activeTab, setActiveTab] = useState<"syndicate" | "captable" | "spec" | "benchmark" | "documents">("syndicate");
+  const blockingRisks = deal.riskFlags.filter((r) => isBlockingRiskFlag(r));
+
+  const [activeTab, setActiveTab] = useState<"documents" | "spec" | "captable" | "syndicate" | "benchmark">(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const tabParam = params.get("tab");
+      if (tabParam && ["documents", "spec", "captable", "syndicate", "benchmark"].includes(tabParam)) {
+        return tabParam as "documents" | "spec" | "captable" | "syndicate" | "benchmark";
+      }
+    }
+    return deal.documents.length === 0
+      ? "documents"
+      : blockingRisks.length > 0
+      ? "spec"
+      : deal.matches.length > 0
+      ? "syndicate"
+      : "spec";
+  });
+
+  const switchTab = (tab: "documents" | "spec" | "captable" | "syndicate" | "benchmark") => {
+    setActiveTab(tab);
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.set("tab", tab);
+      window.history.replaceState(null, "", url.toString());
+    }
+  };
+
+  const jumpToWindow = (tabKey: string, sectionId?: string) => {
+    let mappedTab: "documents" | "spec" | "captable" | "syndicate" | "benchmark" = "documents";
+    if (tabKey === "dataroom" || tabKey === "documents") mappedTab = "documents";
+    else if (tabKey === "spec") mappedTab = "spec";
+    else if (tabKey === "captable") mappedTab = "captable";
+    else if (tabKey === "matching" || tabKey === "syndicate") mappedTab = "syndicate";
+    else if (tabKey === "blueprint" || tabKey === "benchmark") mappedTab = "benchmark";
+
+    switchTab(mappedTab);
+    if (sectionId) {
+      setTimeout(() => scrollToSectionWithHighlight(sectionId), 120);
+    }
+  };
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const tabParam = params.get("tab");
+      if (tabParam && ["documents", "spec", "captable", "syndicate", "benchmark"].includes(tabParam)) {
+        setActiveTab(tabParam as "documents" | "spec" | "captable" | "syndicate" | "benchmark");
+      }
+    }
+  }, []);
+
+  const [competitors, setCompetitors] = useState(deal.competitors || []);
+  const [commercialProspects, setCommercialProspects] = useState(deal.commercialProspects || []);
+
+  useEffect(() => {
+    if (deal.competitors) {
+      setCompetitors(deal.competitors);
+    }
+  }, [deal.competitors]);
+
+  useEffect(() => {
+    if (deal.commercialProspects) {
+      setCommercialProspects(deal.commercialProspects);
+    }
+  }, [deal.commercialProspects]);
+
+  // Competitor Known Backers Extraction & Funder Research Bridge
+  const [isBatchBackerModalOpen, setIsBatchBackerModalOpen] = useState(false);
+  const [singleBackerResearching, setSingleBackerResearching] = useState<string | null>(null);
+  const [backerResearchNotice, setBackerResearchNotice] = useState<string | null>(null);
+  const [isBulkResearching, setIsBulkResearching] = useState(false);
+  const [bulkResearchProgress, setBulkResearchProgress] = useState<{
+    current: number;
+    total: number;
+    currentFund: string;
+  } | null>(null);
+
+  const backersWithCompetitors = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    for (const comp of competitors || []) {
+      for (const inv of comp.knownInvestors || []) {
+        const clean = typeof inv === "string" ? inv.trim() : "";
+        if (clean.length > 1) {
+          if (!map.has(clean)) map.set(clean, new Set());
+          map.get(clean)!.add(comp.name);
+        }
+      }
+    }
+    return Array.from(map.entries()).map(([backerName, comps]) => {
+      const status = checkFundResearchStatus(backerName, deal.matches, allInvestors);
+      return {
+        backerName,
+        competitorsBacked: Array.from(comps),
+        alreadyResearched: status.isResearched,
+        isMatchedToDeal: status.isMatchedToDeal,
+        researchedInvestorId: status.investorId,
+        researchedMatchScore: status.matchScore,
+        matchedName: status.matchedName,
+        tier: status.tier,
+      };
+    });
+  }, [competitors, deal.matches, allInvestors]);
+
+  const unresearchedBackers = useMemo(() => {
+    return backersWithCompetitors.filter((b) => !b.alreadyResearched);
+  }, [backersWithCompetitors]);
+
+  const researchedBackers = useMemo(() => {
+    return backersWithCompetitors.filter((b) => b.alreadyResearched);
+  }, [backersWithCompetitors]);
+
+  const [selectedXRayNode, setSelectedXRayNode] = useState<FieldLineageNode | null>(null);
+
+  const vcLineage = useMemo(() => {
+    return synthesizeFieldLineageFromDsl({
+      ...(deal.dealSpecJson || {}),
+      dealId: deal.id,
+      companyName: deal.companyName,
+      legalEntityJurisdiction: deal.legalEntityJurisdiction,
+      stage: deal.stage,
+      primaryVertical: deal.primaryVertical,
+      industry: deal.industry,
+      targetCustomerProfile: deal.targetCustomerProfile,
+      businessModel: deal.businessModel,
+      financingAsk: deal.financingAsks?.[0]
+        ? {
+            amountUsd:
+              (deal.financingAsks[0] as any).amountUsd ||
+              (deal.financingAsks[0] as any).targetRaiseUsd,
+            targetRaiseUsd:
+              (deal.financingAsks[0] as any).targetRaiseUsd ||
+              (deal.financingAsks[0] as any).amountUsd,
+            valuationCapUsd: (deal.financingAsks[0] as any).valuationCapUsd,
+            instrumentType: (deal.financingAsks[0] as any).instrumentType,
+            plannedRunwayMonths: (deal.financingAsks[0] as any).plannedRunwayMonths,
+          }
+        : (deal.dealSpecJson as any)?.financingAsk,
+      financingAsks: deal.financingAsks,
+      capTable: deal.capTable || (deal.dealSpecJson as any)?.capTable,
+      founders: deal.founders || (deal.dealSpecJson as any)?.founders,
+      competitors: competitors || deal.competitors,
+      commercialProspects: commercialProspects || deal.commercialProspects,
+      matches: deal.matches,
+      traction: (deal as any).traction || (deal.dealSpecJson as any)?.traction,
+      documents: deal.documents,
+    });
+  }, [deal, competitors, commercialProspects]);
+
+  async function handleBulkResearchFunds(fundNames: string[]) {
+    if (fundNames.length === 0 || isBulkResearching) return;
+    setIsBulkResearching(true);
+    setBulkResearchProgress({ current: 0, total: fundNames.length, currentFund: fundNames[0] || "" });
+    setBackerResearchNotice(`Starting bulk research for ${fundNames.length} venture fund${fundNames.length === 1 ? "" : "s"}…`);
+
+    try {
+      for (let i = 0; i < fundNames.length; i++) {
+        const fund = fundNames[i];
+        setBulkResearchProgress({ current: i + 1, total: fundNames.length, currentFund: fund });
+        setBackerResearchNotice(`[${i + 1}/${fundNames.length}] Querying venture thesis for "${fund}"…`);
+
+        const searchRes = await fetch(`/api/vc-deals/${deal.id}/research`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ step: "search", investorHint: fund }),
+        });
+
+        if (searchRes.ok) {
+          const searchData = await searchRes.json();
+          setBackerResearchNotice(`[${i + 1}/${fundNames.length}] Structuring thesis & partner contacts for "${fund}"…`);
+          await fetch(`/api/vc-deals/${deal.id}/research`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              step: "structure",
+              runId: searchData.runId,
+              hint: searchData.hint,
+              findings: searchData.findings,
+              citedUrls: searchData.citedUrls,
+            }),
+          });
+        }
+      }
+
+      setBackerResearchNotice("Re-evaluating syndicate matching scores & anti-portfolio conflicts…");
+      await fetch(`/api/vc-deals/${deal.id}/match`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+
+      setBackerResearchNotice(`✓ Completed bulk research for ${fundNames.length} fund${fundNames.length === 1 ? "" : "s"}! Added to Syndicate Matches.`);
+      setTimeout(() => setBackerResearchNotice(null), 10000);
+      router.refresh();
+    } catch (err: any) {
+      setBackerResearchNotice(`Bulk research halted: ${err?.message || "Error occurred"}`);
+    } finally {
+      setIsBulkResearching(false);
+      setBulkResearchProgress(null);
+    }
+  }
+
+  async function handleResearchSingleBacker(backerName: string) {
+    setSingleBackerResearching(backerName);
+    setBackerResearchNotice(`Querying venture thesis & partner contacts for "${backerName}"…`);
+    try {
+      const searchRes = await fetch(`/api/vc-deals/${deal.id}/research`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ step: "search", investorHint: backerName }),
+      });
+      if (!searchRes.ok) throw new Error("Search failed");
+      const searchData = await searchRes.json();
+
+      setBackerResearchNotice(`Structuring thesis & caching citations for "${backerName}"…`);
+      const structureRes = await fetch(`/api/vc-deals/${deal.id}/research`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          step: "structure",
+          runId: searchData.runId,
+          hint: searchData.hint,
+          findings: searchData.findings,
+          citedUrls: searchData.citedUrls,
+        }),
+      });
+      if (!structureRes.ok) throw new Error("Structure failed");
+
+      setBackerResearchNotice(`Re-evaluating syndicate match with "${backerName}"…`);
+      await fetch(`/api/vc-deals/${deal.id}/match`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+
+      setBackerResearchNotice(`✓ "${backerName}" structured and added to Syndicate Matches!`);
+      setTimeout(() => setBackerResearchNotice(null), 8000);
+      router.refresh();
+    } catch (err: any) {
+      setBackerResearchNotice(`Failed to research "${backerName}": ${err?.message || "Error"}`);
+    } finally {
+      setSingleBackerResearching(null);
+    }
+  }
+
   const [capTableSubTab, setCapTableSubTab] = useState<"safes" | "common" | "overview">("safes");
   const [isEditCapTableOpen, setIsEditCapTableOpen] = useState(false);
   const [isEditDealOpen, setIsEditDealOpen] = useState(false);
+  const [isTaintPolicyOpen, setIsTaintPolicyOpen] = useState(false);
+
   const [selectedDocForExtraction, setSelectedDocForExtraction] = useState<{
     id: string;
     fileName: string;
@@ -544,7 +834,8 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
 
   // Interactive founder syndicate allocation sliders (defaults to 65% Lead / 25% Syndicate / 10% Angel)
   const ask = deal.financingAsks[0];
-  const targetRaise = ask?.targetRaiseUsd ?? 1500000;
+  const targetRaise = ask?.targetRaiseUsd ?? null;
+  const targetRaiseVal = targetRaise || 0;
 
   // Cap Table SAFE & Common data derivation
   const rawSafeHolders: SafeHolderData[] = Array.isArray(deal.capTable?.safeHoldersJson)
@@ -564,9 +855,9 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
           {
             holderName: "Seed SAFE Noteholders",
             investmentAmountUsd: deal.capTable.safesNotesOutstandingUsd,
-            instrumentType: ask?.instrumentType || "POST_MONEY_SAFE",
+            instrumentType: ask?.instrumentType || "SAFE",
             valuationCapUsd: ask?.valuationCapUsd ?? null,
-            discountPct: ask?.discountPct ?? 20,
+            discountPct: ask?.discountPct ?? null,
             dateOrNotes: "Pre-round convertible SAFE notes",
           },
         ]
@@ -611,6 +902,7 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
   const [isDiscoveringCompetitors, setIsDiscoveringCompetitors] = useState(false);
   const [competitorNotice, setCompetitorNotice] = useState<string | null>(null);
   const [hideExcluded, setHideExcluded] = useState<boolean>(true);
+  const [relaxInferredVc, setRelaxInferredVc] = useState<boolean>(false);
 
   async function handleDiscoverCompetitors() {
     setIsDiscoveringCompetitors(true);
@@ -636,6 +928,10 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
 
       if (!res.ok) {
         throw new Error(data?.error || `Failed to discover competitors (${res.status})`);
+      }
+
+      if (data?.competitors && Array.isArray(data.competitors)) {
+        setCompetitors(data.competitors);
       }
 
       setCompetitorNotice(data.auditSummary || "Competitor discovery complete!");
@@ -698,6 +994,10 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
         throw new Error(data?.error || `Failed to discover commercial prospects (${res.status})`);
       }
 
+      if (data?.prospects && Array.isArray(data.prospects)) {
+        setCommercialProspects(data.prospects);
+      }
+
       setCommercialNotice(data.auditSummary || "Commercial intelligence complete!");
       setTimeout(() => setCommercialNotice(null), 6000);
       router.refresh();
@@ -747,6 +1047,30 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
         throw new Error(data?.error || `Failed to discover contacts (${res.status})`);
       }
 
+      if (data?.contacts && Array.isArray(data.contacts)) {
+        setCommercialProspects((prev) => {
+          const newContactsByProspect = new Map<string, any[]>();
+          for (const c of data.contacts) {
+            const list = newContactsByProspect.get(c.prospectId) || [];
+            list.push(c);
+            newContactsByProspect.set(c.prospectId, list);
+          }
+
+          return prev.map((p) => {
+            if (targetProspectId) {
+              if (p.id === targetProspectId) {
+                return { ...p, contacts: data.contacts };
+              }
+              return p;
+            }
+            if (newContactsByProspect.has(p.id)) {
+              return { ...p, contacts: newContactsByProspect.get(p.id) };
+            }
+            return p;
+          });
+        });
+      }
+
       setContactNotice(data.auditSummary || "Executive contact discovery complete!");
       setTimeout(() => setContactNotice(null), 6000);
       router.refresh();
@@ -759,7 +1083,7 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
   }
 
   // Commercial Prospects partitioning
-  const allCommercialProspects = deal.commercialProspects || [];
+  const allCommercialProspects = commercialProspects || [];
   const totalContactsCount = allCommercialProspects.reduce(
     (acc, p) => acc + (p.contacts?.length || 0),
     0,
@@ -828,7 +1152,7 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
     targetCustomerProfile: deal.targetCustomerProfile || null,
     businessModel: deal.businessModel || null,
     jurisdiction: deal.legalEntityJurisdiction,
-    existingCompetitors: (deal.competitors || []).map((c) => c.name),
+    existingCompetitors: (competitors || []).map((c) => c.name),
   };
 
   // Competitor DSL Input & Missing Parameters tracking
@@ -878,6 +1202,22 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
     reconciledSpec: deal.dealSpecJson || null,
   };
 
+  // Venture Syndicate Matching DSL Payload
+  const syndicateDslPayload = {
+    agentFlow: "DAIKI-SYNDICATE-V1",
+    companyName: deal.companyName,
+    stage: deal.stage,
+    targetRaise: targetRaise,
+    leadAllocationPct: leadPct,
+    syndicateAllocationPct: syndicatePct,
+    angelAllocationPct: angelPct,
+    primaryVertical: deal.primaryVertical,
+    industry: deal.industry || null,
+    subIndustries: deal.subIndustries || [],
+    jurisdiction: deal.legalEntityJurisdiction,
+    dealSpec: deal.dealSpecJson || null,
+  };
+
   // Contact Discovery Agent DSL Payload
   const contactMissingParams: MissingParameterInfo[] = [];
   if (!deal.targetCustomerProfile || deal.targetCustomerProfile.trim().length === 0) {
@@ -915,13 +1255,36 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
 
 
   const totalPct = leadPct + syndicatePct + angelPct;
-  const leadUsd = Math.round((targetRaise * leadPct) / 100);
-  const syndicateUsd = Math.round((targetRaise * syndicatePct) / 100);
-  const angelUsd = Math.round((targetRaise * angelPct) / 100);
+  const leadUsd = Math.round((targetRaiseVal * leadPct) / 100);
+  const syndicateUsd = Math.round((targetRaiseVal * syndicatePct) / 100);
+  const angelUsd = Math.round((targetRaiseVal * angelPct) / 100);
 
-  // Match exclusion and qualification partitioning
-  const excludedMatches = deal.matches.filter((m) => m.verdict === "EXCLUDED");
-  const qualifiedMatches = deal.matches.filter((m) => m.verdict !== "EXCLUDED");
+  // Match exclusion and qualification partitioning with Inferred Relaxation
+  function isVcMatchOnlyFailingInferred(m: typeof deal.matches[0]) {
+    const investor = m.investor;
+    if (!investor) return false;
+    const evaluatedCriteria = evaluateStartupInvestorCriteria(investor as any, {
+      stage: deal.stage,
+      primaryVertical: deal.primaryVertical,
+      industry: deal.industry,
+      legalEntityJurisdiction: deal.legalEntityJurisdiction,
+      tractionArrUsd: deal.dealSpecJson?.traction?.arrUsd ?? null,
+      competitors: deal.competitors,
+      companyName: deal.companyName,
+    });
+    const failed = evaluatedCriteria.filter((c) => c.status === "fail");
+    if (failed.length === 0) return false;
+    return failed.every((c) => c.funderSide?.acquisitionMethod === "AGENT_INFERRED_FROM_SCOPE" || c.funderSide?.acquisitionMethod === "UNPUBLISHED_DESK_ESTIMATE");
+  }
+
+  const excludedMatches = deal.matches.filter((m) => {
+    if (relaxInferredVc && isVcMatchOnlyFailingInferred(m)) return false;
+    return m.verdict === "EXCLUDED";
+  });
+  const qualifiedMatches = deal.matches.filter((m) => {
+    if (relaxInferredVc && isVcMatchOnlyFailingInferred(m)) return true;
+    return m.verdict !== "EXCLUDED";
+  });
   const displayedMatches = hideExcluded ? qualifiedMatches : deal.matches;
 
   // Raw counts per tier for stats & empty state messaging
@@ -965,96 +1328,145 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
 
   const latestBlueprint = deal.syndicateBlueprints[0];
 
+  const steps = [
+    {
+      id: "documents",
+      stepNumber: 1,
+      label: "Data Room & Taint Policy",
+      agentBadge: "INGEST & TAINT",
+      milestoneRange: "M1–M2",
+      topButtonHint: "1. Extract & Spec",
+      completed: deal.documents.length > 0,
+      count: deal.documents.length,
+    },
+    {
+      id: "spec",
+      stepNumber: 2,
+      label: "Deal Spec, Diligence & Risk Gate",
+      agentBadge: "誠 MAKOTO · 光 · 疾風",
+      milestoneRange: "M3–M7",
+      topButtonHint: "2. Rivals & ICP Leads",
+      completed: (deal.founders.length > 0 || Boolean(deal.dealSpecJson)) && blockingRisks.length === 0,
+      count: deal.founders.length,
+      warningCount: blockingRisks.length,
+    },
+    {
+      id: "syndicate",
+      stepNumber: 3,
+      label: "Syndicate Match & Allocator",
+      agentBadge: "大輝 DAIKI VC",
+      milestoneRange: "M8",
+      topButtonHint: "3. Match Syndicate",
+      completed: deal.matches.length > 0,
+      count: deal.matches.length,
+      locked: blockingRisks.length > 0,
+    },
+    {
+      id: "benchmark",
+      stepNumber: 4,
+      label: "Pro-Forma Dilution & Terms",
+      agentBadge: "ROUND BENCHMARK",
+      milestoneRange: "M9",
+      topButtonHint: "4. Benchmark Terms",
+      completed: Boolean(latestBlueprint),
+    },
+  ];
+
   return (
     <div className="space-y-6">
-      {/* Tab Navigation */}
-      <div className="flex border-b border-neutral-200 dark:border-neutral-800 overflow-x-auto">
-        <button
-          onClick={() => setActiveTab("syndicate")}
-          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-semibold tracking-wide whitespace-nowrap transition-all ${
-            activeTab === "syndicate"
-              ? "border-emerald-600 text-emerald-600 dark:border-emerald-400 dark:text-emerald-400"
-              : "border-transparent text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200"
-          }`}
-        >
-          <Sliders className="h-4 w-4" />
-          <span>Syndicate Match &amp; Allocator</span>
-          <Badge tone={deal.matches.length > 0 ? "green" : "neutral"} className="ml-1">
-            {hideExcluded && excludedMatches.length > 0
-              ? `${qualifiedMatches.length}/${deal.matches.length}`
-              : deal.matches.length}
-          </Badge>
-        </button>
+      {/* Shared 4-Stage Guided Pipeline Stepper */}
+      <DealPipelineStepper
+        assetLabel="Startup Venture Capital"
+        steps={steps}
+        activeStepId={activeTab === "captable" ? "spec" : activeTab}
+        onSelectStep={(id) => switchTab(id as any)}
+        onOpenDslModal={() =>
+          setActiveDslModal({
+            agentName: "Deal Spec & Diligence Reconciliation Engine",
+            agentFlow: "MAKOTO-SPEC-V2-PROVENANCE",
+            description:
+              "Synthesizes uploaded pitch decks, cap tables, and financial models with AUDITED_PROOF taint precedence into a canonical venture Deal Spec.",
+            dslInput: specDslPayload,
+            agentOutput: deal.dealSpecJson || {
+              founders: deal.founders,
+              capTable: deal.capTable,
+              financingAsks: deal.financingAsks,
+              riskFlags: deal.riskFlags,
+            },
+            missingParameters: commercialMissingParams,
+          })
+        }
+        onOpenTaintPolicy={() => setIsTaintPolicyOpen(true)}
+        blockingRiskCount={blockingRisks.length}
+      />
 
-        <button
-          onClick={() => setActiveTab("captable")}
-          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-semibold tracking-wide whitespace-nowrap transition-all ${
-            activeTab === "captable"
-              ? "border-emerald-600 text-emerald-600 dark:border-emerald-400 dark:text-emerald-400"
-              : "border-transparent text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200"
-          }`}
-        >
-          <PieChart className="h-4 w-4" />
-          <span>Cap Table &amp; SAFEs</span>
-          <Badge tone={safeHolders.length > 0 ? "green" : "neutral"} className="ml-1">
-            {safeHolders.length} SAFE{safeHolders.length === 1 ? "" : "s"}
-          </Badge>
-        </button>
+      {/* Interactive Deal Execution & Verification Progress Timeline */}
+      <DealExecutionTimeline
+        assetClass="STARTUP"
+        dealId={deal.id}
+        currentTab={activeTab}
+        onSelectTab={(tabKey, sectionId) => jumpToWindow(tabKey, sectionId)}
+        docCount={deal.documents.length}
+        hasReconciledSpec={deal.status !== "UPLOADING" || (deal.financingAsks?.length ?? 0) > 0}
+        unresolvedRiskCount={blockingRisks.length}
+        competitorCount={competitors?.length || 0}
+        commercialProspectCount={commercialProspects?.length || 0}
+        contactCount={totalContactsCount}
+        matchCount={deal.matches.length}
+        benchmarkCount={deal.syndicateBlueprints?.length || (latestBlueprint ? 1 : 0)}
+      />
 
-        <button
-          onClick={() => setActiveTab("spec")}
-          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-semibold tracking-wide whitespace-nowrap transition-all ${
-            activeTab === "spec"
-              ? "border-emerald-600 text-emerald-600 dark:border-emerald-400 dark:text-emerald-400"
-              : "border-transparent text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200"
-          }`}
-        >
-          <Building2 className="h-4 w-4" />
-          <span>Deal Spec &amp; Diligence</span>
-          {deal.riskFlags.length > 0 && (
-            <Badge tone="amber" className="ml-1">
-              {deal.riskFlags.length} flags
-            </Badge>
-          )}
-        </button>
-
-        <button
-          onClick={() => setActiveTab("benchmark")}
-          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-semibold tracking-wide whitespace-nowrap transition-all ${
-            activeTab === "benchmark"
-              ? "border-emerald-600 text-emerald-600 dark:border-emerald-400 dark:text-emerald-400"
-              : "border-transparent text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200"
-          }`}
-        >
-          <Scale className="h-4 w-4" />
-          <span>Pro-Forma Dilution &amp; Terms</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab("documents")}
-          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-semibold tracking-wide whitespace-nowrap transition-all ${
-            activeTab === "documents"
-              ? "border-emerald-600 text-emerald-600 dark:border-emerald-400 dark:text-emerald-400"
-              : "border-transparent text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200"
-          }`}
-        >
-          <FileText className="h-4 w-4" />
-          <span>Data Room ({deal.documents.length})</span>
-        </button>
-      </div>
+      {/* Stage 2 Sub-View Pill Toggle (Deal Spec & Market Intel vs Cap Table & SAFEs) */}
+      {(activeTab === "spec" || activeTab === "captable") && (
+        <div className="flex items-center justify-between rounded-lg border border-blue-200/70 bg-blue-50/40 px-3 py-2 dark:border-blue-900/50 dark:bg-blue-950/20">
+          <span className="text-xs font-semibold text-blue-900 dark:text-blue-200">
+            Stage 2 View Selector:
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => switchTab("spec")}
+              className={`flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-semibold transition-all cursor-pointer ${
+                activeTab === "spec"
+                  ? "bg-blue-600 text-white shadow-2xs"
+                  : "bg-white/80 text-neutral-700 hover:bg-white dark:bg-neutral-800 dark:text-neutral-300"
+              }`}
+            >
+              <Building2 className="h-3.5 w-3.5" />
+              <span>2a. Deal Spec, Rivals &amp; ICP Leads (M3–M7)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => switchTab("captable")}
+              className={`flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-semibold transition-all cursor-pointer ${
+                activeTab === "captable"
+                  ? "bg-blue-600 text-white shadow-2xs"
+                  : "bg-white/80 text-neutral-700 hover:bg-white dark:bg-neutral-800 dark:text-neutral-300"
+              }`}
+            >
+              <PieChart className="h-3.5 w-3.5" />
+              <span>2b. Cap Table &amp; SAFEs ({safeHolders.length} SAFE{safeHolders.length === 1 ? "" : "s"})</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* TAB 1: SYNDICATE MATCHING & ALLOCATOR */}
       {activeTab === "syndicate" && (
         <div className="space-y-6">
           {/* Interactive Allocation Customizer Card */}
-          <Card className="border-emerald-200/80 bg-linear-to-b from-white to-emerald-50/20 dark:border-emerald-900/50 dark:from-neutral-900 dark:to-emerald-950/10">
+          <Card id="section-vc-syndicate" className="border-emerald-200/80 bg-linear-to-b from-white to-emerald-50/20 dark:border-emerald-900/50 dark:from-neutral-900 dark:to-emerald-950/10">
             <CardHeader className="pb-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <Sliders className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
                   <CardTitle>Founder Syndicate Round Sizing &amp; Allocation</CardTitle>
                 </div>
-                <Badge tone="green">Target: ${targetRaise.toLocaleString()} USD</Badge>
+                {targetRaise ? (
+                  <Badge tone="green">Target: ${targetRaise.toLocaleString()} USD</Badge>
+                ) : (
+                  <Badge tone="neutral">Target: Unspecified</Badge>
+                )}
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -1328,6 +1740,40 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                 </div>
 
                 <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      setActiveDslModal({
+                        agentName: "Venture Syndicate Matching & Thesis Architect",
+                        agentFlow: "DAIKI-SYNDICATE-V1",
+                        description:
+                          "Synthesizes target round sizing, multi-tier allocation blueprint, and evaluates institutional venture fund fit against mandate criteria.",
+                        dslInput: syndicateDslPayload,
+                        agentOutput: deal.matches,
+                      })
+                    }
+                    className="gap-1.5 text-xs text-neutral-700 hover:text-neutral-900 border-neutral-300 dark:border-neutral-700 dark:text-neutral-300"
+                  >
+                    <FileCode className="h-3.5 w-3.5 text-emerald-600" />
+                    Inspect Syndicate DSL (大輝 Daiki)
+                  </Button>
+
+                  {/* Relax Inferred Blockers Toggle */}
+                  <button
+                    type="button"
+                    onClick={() => setRelaxInferredVc(!relaxInferredVc)}
+                    className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-semibold border transition-all ${
+                      relaxInferredVc
+                        ? "bg-purple-100 text-purple-900 border-purple-300 dark:bg-purple-950/80 dark:text-purple-200 dark:border-purple-800 shadow-xs"
+                        : "bg-white text-neutral-600 border-neutral-200 hover:bg-neutral-50 dark:bg-neutral-800 dark:text-neutral-400 dark:border-neutral-700"
+                    }`}
+                    title="When enabled, investors whose only failures are unverified AI scope inferences are brought into consideration rather than being blocked."
+                  >
+                    <Sparkles className={`h-3 w-3 ${relaxInferredVc ? "text-purple-600 dark:text-purple-400 fill-purple-600/20" : "text-neutral-400"}`} />
+                    <span>Relax Inferred Blockers</span>
+                  </button>
+
                   <div className="inline-flex rounded-lg border border-neutral-200 bg-white p-0.5 dark:border-neutral-700 dark:bg-neutral-800 shadow-xs">
                     <button
                       type="button"
@@ -1418,6 +1864,10 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                                 <h4 className="font-semibold text-neutral-900 dark:text-neutral-100 text-sm">
                                   {match.investor.name}
                                 </h4>
+                                <ProvenancePill
+                                  node={vcLineage[`$.matches.${match.investor.name}`]}
+                                  onInspect={() => setSelectedXRayNode(vcLineage[`$.matches.${match.investor.name}`])}
+                                />
                                 {match.verdict === "EXCLUDED" && (
                                   <Badge tone="neutral" className="bg-neutral-200 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
                                     Excluded
@@ -1505,7 +1955,7 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                         </div>
 
                         {/* Conflict & Re-Verified Link Audit Details */}
-                        <MatchConflictAndAuditDetails match={match} onOpenSnapshot={(u) => setCachedSnapshotUrl(u)} />
+                        <MatchConflictAndAuditDetails match={match} deal={deal} onOpenSnapshot={(u) => setCachedSnapshotUrl(u)} />
                       </CardContent>
                     </Card>
                   ))
@@ -1563,6 +2013,10 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                                 <h4 className="font-semibold text-neutral-900 dark:text-neutral-100 text-sm">
                                   {match.investor.name}
                                 </h4>
+                                <ProvenancePill
+                                  node={vcLineage[`$.matches.${match.investor.name}`]}
+                                  onInspect={() => setSelectedXRayNode(vcLineage[`$.matches.${match.investor.name}`])}
+                                />
                                 {match.isLeadCandidate && (
                                   <Badge tone="green">Co-Lead Capable</Badge>
                                 )}
@@ -1616,7 +2070,7 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                               </a>
                             )}
                           </div>
-                          <MatchConflictAndAuditDetails match={match} onOpenSnapshot={(u) => setCachedSnapshotUrl(u)} />
+                          <MatchConflictAndAuditDetails match={match} deal={deal} onOpenSnapshot={(u) => setCachedSnapshotUrl(u)} />
                         </CardContent>
                       </Card>
                     ))
@@ -1670,9 +2124,15 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                         <CardContent className="pt-4 space-y-2.5">
                           <div className="flex items-center justify-between gap-2">
                             <div>
-                              <h4 className="font-semibold text-neutral-900 dark:text-neutral-100 text-sm">
-                                {match.investor.name}
-                              </h4>
+                              <div className="flex items-center gap-2">
+                                <h4 className="font-semibold text-neutral-900 dark:text-neutral-100 text-sm">
+                                  {match.investor.name}
+                                </h4>
+                                <ProvenancePill
+                                  node={vcLineage[`$.matches.${match.investor.name}`]}
+                                  onInspect={() => setSelectedXRayNode(vcLineage[`$.matches.${match.investor.name}`])}
+                                />
+                              </div>
                               <p className="text-xs text-neutral-600 dark:text-neutral-300 mt-0.5">
                                 {match.rationale}
                               </p>
@@ -1700,7 +2160,7 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                             </span>
                             <span>No Board Seat Needed</span>
                           </div>
-                          <MatchConflictAndAuditDetails match={match} onOpenSnapshot={(u) => setCachedSnapshotUrl(u)} />
+                          <MatchConflictAndAuditDetails match={match} deal={deal} onOpenSnapshot={(u) => setCachedSnapshotUrl(u)} />
                         </CardContent>
                       </Card>
                     ))
@@ -1751,9 +2211,15 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                         <CardContent className="pt-4 space-y-2.5">
                           <div className="flex items-center justify-between gap-2">
                             <div>
-                              <h4 className="font-semibold text-neutral-900 dark:text-neutral-100 text-sm">
-                                {match.investor.name}
-                              </h4>
+                              <div className="flex items-center gap-2">
+                                <h4 className="font-semibold text-neutral-900 dark:text-neutral-100 text-sm">
+                                  {match.investor.name}
+                                </h4>
+                                <ProvenancePill
+                                  node={vcLineage[`$.matches.${match.investor.name}`]}
+                                  onInspect={() => setSelectedXRayNode(vcLineage[`$.matches.${match.investor.name}`])}
+                                />
+                              </div>
                               <p className="text-xs text-neutral-600 dark:text-neutral-300 mt-0.5">
                                 {match.rationale}
                               </p>
@@ -1762,7 +2228,7 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                               {match.verdict}
                             </Badge>
                           </div>
-                          <MatchConflictAndAuditDetails match={match} onOpenSnapshot={(u) => setCachedSnapshotUrl(u)} />
+                          <MatchConflictAndAuditDetails match={match} deal={deal} onOpenSnapshot={(u) => setCachedSnapshotUrl(u)} />
                         </CardContent>
                       </Card>
                     ))
@@ -1771,6 +2237,36 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
               </div>
             </div>
           )}
+
+          {/* Unified Tab 3 DSL Specifications, Versions & Field Guide */}
+          <TabDslInspectorPanel
+            assetClass="STARTUP"
+            dealId={deal.id}
+            dealName={deal.companyName}
+            tabKey="matching"
+            tabLabel="3. Syndicate & Investor Matching"
+            items={[
+              {
+                id: "matching-output",
+                dslType: "MATCHING_ENGINE_OUTPUT",
+                title: "Venture Matching Results & Portfolio Conflict Checks",
+                subtitle: `${deal.matches.length} institutional funds scored across 4 syndicate tiers`,
+                payload: deal.matches.map((m) => ({
+                  investorName: m.investor.name,
+                  tier: m.tier,
+                  verdict: m.verdict,
+                  rationale: m.rationale,
+                  isLeadCandidate: m.isLeadCandidate,
+                  thesisResonanceScore: m.thesisResonanceScore,
+                  portfolioConflictDetected: m.portfolioConflictDetected,
+                  conflictingPortfolioCompany: m.conflictingPortfolioCompany,
+                })),
+                onSavePayload: async () => {
+                  router.refresh();
+                },
+              },
+            ]}
+          />
         </div>
       )}
 
@@ -1840,10 +2336,14 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                 <Sparkles className="h-4 w-4 text-purple-600" />
               </div>
               <div className="text-xl font-bold font-mono text-neutral-900 dark:text-neutral-100">
-                {deal.capTable?.optionPoolPct ?? 10}%
+                {deal.capTable?.optionPoolPct != null ? `${deal.capTable.optionPoolPct}%` : "—"}
               </div>
               <div className="text-[11px] text-neutral-500 mt-1">
-                {deal.capTable && deal.capTable.optionPoolPct < 10 ? "⚠️ Below 10% benchmark" : "✓ Standard venture pool"}
+                {deal.capTable?.optionPoolPct != null
+                  ? deal.capTable.optionPoolPct < 10
+                    ? "⚠️ Below 10% benchmark"
+                    : "✓ Standard venture pool"
+                  : "Unspecified"}
               </div>
             </div>
 
@@ -1987,6 +2487,18 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                                     {s.holderName.charAt(0).toUpperCase()}
                                   </div>
                                   <span>{s.holderName}</span>
+                                  <ProvenancePill
+                                    node={
+                                      vcLineage[`$.capTable.safeHolders[${idx}].holderName`] ||
+                                      vcLineage[`$.capTable.safeHolders.${s.holderName}`]
+                                    }
+                                    onInspect={() =>
+                                      setSelectedXRayNode(
+                                        vcLineage[`$.capTable.safeHolders[${idx}].holderName`] ||
+                                        vcLineage[`$.capTable.safeHolders.${s.holderName}`]
+                                      )
+                                    }
+                                  />
                                 </td>
                                 <td className="py-3 px-3">
                                   <Badge tone="purple" className="text-[10px]">
@@ -2113,6 +2625,18 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                                   {c.holderName.charAt(0).toUpperCase()}
                                 </div>
                                 <span>{c.holderName}</span>
+                                <ProvenancePill
+                                  node={
+                                    vcLineage[`$.capTable.commonHolders[${idx}].holderName`] ||
+                                    vcLineage[`$.capTable.commonHolders.${c.holderName}`]
+                                  }
+                                  onInspect={() =>
+                                    setSelectedXRayNode(
+                                      vcLineage[`$.capTable.commonHolders[${idx}].holderName`] ||
+                                      vcLineage[`$.capTable.commonHolders.${c.holderName}`]
+                                    )
+                                  }
+                                />
                               </td>
                               <td className="py-3 px-3">
                                 <Badge tone="blue" className="text-[10px]">
@@ -2292,8 +2816,47 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
       {/* TAB 3: DEAL SPEC & DILIGENCE */}
       {activeTab === "spec" && (
         <div className="space-y-6">
+          <TabSectionNav
+            sections={[
+              {
+                id: "section-vc-spec",
+                label: "Deal Spec & Entity",
+              },
+              {
+                id: "section-vc-risk-gate",
+                label: "Risk Gate",
+                count: blockingRisks.length > 0 ? blockingRisks.length : deal.riskFlags.length,
+                isWarning: blockingRisks.length > 0,
+                badgeTone: blockingRisks.length > 0 ? "red" : "amber",
+              },
+              {
+                id: "section-vc-captable",
+                label: "Ask & Cap Table",
+              },
+              {
+                id: "section-vc-founders",
+                label: "Founders & Execs",
+                count: deal.founders.length,
+              },
+              {
+                id: "section-vc-competitors",
+                label: "Competitors (Hikari)",
+                count: (competitors || []).length,
+              },
+              {
+                id: "section-vc-commercial",
+                label: "Commercial ICPs (Hayate)",
+                count: (commercialProspects || []).length,
+              },
+              {
+                id: "section-vc-dsl-inspector",
+                label: "Tab DSL Studio",
+              },
+            ]}
+          />
+
           {/* Core Startup & Legal Entity Spec Table */}
-          <Card className="border-emerald-200/80 bg-linear-to-b from-white to-emerald-50/15 dark:border-emerald-900/50 dark:from-neutral-900 dark:to-emerald-950/10">
+          <Card id="section-vc-spec" className="border-emerald-200/80 bg-linear-to-b from-white to-emerald-50/15 dark:border-emerald-900/50 dark:from-neutral-900 dark:to-emerald-950/10">
             <CardHeader className="pb-3 border-b border-neutral-100 dark:border-neutral-800">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-2">
@@ -2311,17 +2874,18 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                     variant="outline"
                     onClick={() =>
                       setActiveDslModal({
-                        agentName: "Deal Spec & Extraction Reconciliation Agent",
-                        agentFlow: "DEAL_SPEC_RECONCILIATION_V2",
+                        agentName: "Startup Spec & Diligence Extraction Agent",
+                        agentFlow: "DAIKI-STARTUP-V1",
                         description:
                           "Deterministic parameters reconciled from data room documents into the StartupDealSpec schema.",
                         dslInput: specDslPayload,
+                        agentOutput: deal.dealSpecJson,
                       })
                     }
                     className="gap-1.5 text-xs text-neutral-700 hover:text-neutral-900 border-neutral-300 dark:border-neutral-700 dark:text-neutral-300"
                   >
                     <FileCode className="h-3.5 w-3.5 text-emerald-600" />
-                    Inspect Deal Spec DSL
+                    Inspect Deal Spec DSL (大輝 Daiki)
                   </Button>
                   <Button
                     size="sm"
@@ -2352,10 +2916,16 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                         Legal Entity Jurisdiction
                       </td>
                       <td className="py-2.5 px-3">
-                        <span className="inline-flex items-center gap-1.5 font-bold text-xs text-emerald-800 bg-white px-2.5 py-1 rounded-md border border-emerald-300 shadow-xs dark:bg-neutral-800 dark:text-emerald-300 dark:border-emerald-700">
-                          <Globe className="h-3.5 w-3.5 text-emerald-600" />
-                          {deal.legalEntityJurisdiction || "Not Specified (Global)"}
-                        </span>
+                        <div className="inline-flex items-center gap-2">
+                          <span className="inline-flex items-center gap-1.5 font-bold text-xs text-emerald-800 bg-white px-2.5 py-1 rounded-md border border-emerald-300 shadow-xs dark:bg-neutral-800 dark:text-emerald-300 dark:border-emerald-700">
+                            <Globe className="h-3.5 w-3.5 text-emerald-600" />
+                            {deal.legalEntityJurisdiction || "Not Specified (Global)"}
+                          </span>
+                          <ProvenancePill
+                            node={vcLineage["$.legalEntityJurisdiction"]}
+                            onInspect={() => setSelectedXRayNode(vcLineage["$.legalEntityJurisdiction"])}
+                          />
+                        </div>
                       </td>
                       <td className="py-2.5 px-3 text-neutral-500">
                         Primary geographic gate for syndicate lead funds &amp; co-investors
@@ -2365,7 +2935,15 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                       <td className="py-2.5 px-3 font-medium text-neutral-600 dark:text-neutral-400">
                         Company Legal Name
                       </td>
-                      <td className="py-2.5 px-3 font-semibold">{deal.companyName}</td>
+                      <td className="py-2.5 px-3 font-semibold">
+                        <div className="inline-flex items-center gap-2">
+                          <span>{deal.companyName}</span>
+                          <ProvenancePill
+                            node={vcLineage["$.companyName"]}
+                            onInspect={() => setSelectedXRayNode(vcLineage["$.companyName"])}
+                          />
+                        </div>
+                      </td>
                       <td className="py-2.5 px-3 text-neutral-500">Inferred from articles of incorporation / deck title</td>
                     </tr>
                     <tr>
@@ -2373,7 +2951,13 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                         Venture Stage
                       </td>
                       <td className="py-2.5 px-3">
-                        <Badge tone="blue">{deal.stage.replaceAll("_", " ")}</Badge>
+                        <div className="inline-flex items-center gap-2">
+                          <Badge tone="blue">{deal.stage.replaceAll("_", " ")}</Badge>
+                          <ProvenancePill
+                            node={vcLineage["$.stage"]}
+                            onInspect={() => setSelectedXRayNode(vcLineage["$.stage"])}
+                          />
+                        </div>
                       </td>
                       <td className="py-2.5 px-3 text-neutral-500">Filters Tier 1 Lead VC check size and check minimums</td>
                     </tr>
@@ -2382,7 +2966,13 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                         Primary Vertical
                       </td>
                       <td className="py-2.5 px-3">
-                        <Badge tone="purple">{deal.primaryVertical.replaceAll("_", " ")}</Badge>
+                        <div className="inline-flex items-center gap-2">
+                          <Badge tone="purple">{deal.primaryVertical.replaceAll("_", " ")}</Badge>
+                          <ProvenancePill
+                            node={vcLineage["$.primaryVertical"]}
+                            onInspect={() => setSelectedXRayNode(vcLineage["$.primaryVertical"])}
+                          />
+                        </div>
                       </td>
                       <td className="py-2.5 px-3 text-neutral-500">Sector thesis matching and anti-portfolio conflict check</td>
                     </tr>
@@ -2391,8 +2981,14 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                         Target Industry &amp; Sub-Markets
                       </td>
                       <td className="py-2.5 px-3">
-                        <div className="font-semibold text-neutral-900 dark:text-neutral-100">
-                          {deal.industry || `${deal.primaryVertical.replaceAll("_", " ")} Solutions`}
+                        <div className="inline-flex items-center gap-2">
+                          <div className="font-semibold text-neutral-900 dark:text-neutral-100">
+                            {deal.industry || `${deal.primaryVertical.replaceAll("_", " ")} Solutions`}
+                          </div>
+                          <ProvenancePill
+                            node={vcLineage["$.industry"]}
+                            onInspect={() => setSelectedXRayNode(vcLineage["$.industry"])}
+                          />
                         </div>
                         {deal.subIndustries && deal.subIndustries.length > 0 && (
                           <div className="flex flex-wrap gap-1 mt-1">
@@ -2413,8 +3009,14 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                         Target Customer Profile (ICP)
                       </td>
                       <td className="py-2.5 px-3">
-                        <div className={deal.targetCustomerProfile ? "font-medium text-neutral-800 dark:text-neutral-200" : "italic text-neutral-400"}>
-                          {deal.targetCustomerProfile || "Not Specified (Using B2B default)"}
+                        <div className="inline-flex items-center gap-2">
+                          <div className={deal.targetCustomerProfile ? "font-medium text-neutral-800 dark:text-neutral-200" : "italic text-neutral-400"}>
+                            {deal.targetCustomerProfile || "Not Specified (Using B2B default)"}
+                          </div>
+                          <ProvenancePill
+                            node={vcLineage["$.targetCustomerProfile"]}
+                            onInspect={() => setSelectedXRayNode(vcLineage["$.targetCustomerProfile"])}
+                          />
                         </div>
                       </td>
                       <td className="py-2.5 px-3 text-neutral-500">
@@ -2426,8 +3028,14 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                         Monetization &amp; Business Model
                       </td>
                       <td className="py-2.5 px-3">
-                        <div className={deal.businessModel ? "font-medium text-neutral-800 dark:text-neutral-200" : "italic text-neutral-400"}>
-                          {deal.businessModel || "Not Specified"}
+                        <div className="inline-flex items-center gap-2">
+                          <div className={deal.businessModel ? "font-medium text-neutral-800 dark:text-neutral-200" : "italic text-neutral-400"}>
+                            {deal.businessModel || "Not Specified"}
+                          </div>
+                          <ProvenancePill
+                            node={vcLineage["$.businessModel"]}
+                            onInspect={() => setSelectedXRayNode(vcLineage["$.businessModel"])}
+                          />
                         </div>
                       </td>
                       <td className="py-2.5 px-3 text-neutral-500">
@@ -2438,8 +3046,16 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                       <td className="py-2.5 px-3 font-medium text-neutral-600 dark:text-neutral-400">
                         Target Financing Raise
                       </td>
-                      <td className="py-2.5 px-3 font-mono font-bold text-emerald-600">
-                        ${ask?.targetRaiseUsd.toLocaleString() ?? "1,500,000"} USD
+                      <td className="py-2.5 px-3">
+                        <div className="inline-flex items-center gap-2">
+                          <span className="font-mono font-bold text-emerald-600">
+                            {ask?.targetRaiseUsd != null ? `$${ask.targetRaiseUsd.toLocaleString()} USD` : "Unspecified"}
+                          </span>
+                          <ProvenancePill
+                            node={vcLineage["$.financingAsk.targetRaiseUsd"]}
+                            onInspect={() => setSelectedXRayNode(vcLineage["$.financingAsk.targetRaiseUsd"])}
+                          />
+                        </div>
                       </td>
                       <td className="py-2.5 px-3 text-neutral-500">Sizes the 65% Lead / 25% Syndicate / 10% Angel tranche split</td>
                     </tr>
@@ -2447,8 +3063,16 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                       <td className="py-2.5 px-3 font-medium text-neutral-600 dark:text-neutral-400">
                         Valuation Cap / Target Pricing
                       </td>
-                      <td className="py-2.5 px-3 font-mono font-semibold">
-                        {ask?.valuationCapUsd ? `$${ask.valuationCapUsd.toLocaleString()} USD` : "Uncapped / Market Determined"}
+                      <td className="py-2.5 px-3">
+                        <div className="inline-flex items-center gap-2">
+                          <span className="font-mono font-semibold">
+                            {ask?.valuationCapUsd ? `$${ask.valuationCapUsd.toLocaleString()} USD` : "Uncapped / Market Determined"}
+                          </span>
+                          <ProvenancePill
+                            node={vcLineage["$.financingAsk.valuationCapUsd"]}
+                            onInspect={() => setSelectedXRayNode(vcLineage["$.financingAsk.valuationCapUsd"])}
+                          />
+                        </div>
                       </td>
                       <td className="py-2.5 px-3 text-neutral-500">Determines pre-money and post-money founder dilution model</td>
                     </tr>
@@ -2456,8 +3080,16 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                       <td className="py-2.5 px-3 font-medium text-neutral-600 dark:text-neutral-400">
                         Round Instrument
                       </td>
-                      <td className="py-2.5 px-3 font-mono">
-                        {ask?.instrumentType.replaceAll("_", " ") ?? "POST MONEY SAFE"}
+                      <td className="py-2.5 px-3">
+                        <div className="inline-flex items-center gap-2">
+                          <span className="font-mono">
+                            {ask?.instrumentType ? ask.instrumentType.replaceAll("_", " ") : "Unspecified"}
+                          </span>
+                          <ProvenancePill
+                            node={vcLineage["$.financingAsk.instrumentType"]}
+                            onInspect={() => setSelectedXRayNode(vcLineage["$.financingAsk.instrumentType"])}
+                          />
+                        </div>
                       </td>
                       <td className="py-2.5 px-3 text-neutral-500">YC Post-Money SAFE / Convertible Note / Priced Equity</td>
                     </tr>
@@ -2465,48 +3097,60 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                       <td className="py-2.5 px-3 font-medium text-neutral-600 dark:text-neutral-400">
                         Planned Runway
                       </td>
-                      <td className="py-2.5 px-3 font-medium">
-                        {ask?.plannedRunwayMonths ?? 18} months
+                      <td className="py-2.5 px-3">
+                        <div className="inline-flex items-center gap-2">
+                          <span className="font-medium">
+                            {ask?.plannedRunwayMonths ?? 18} months
+                          </span>
+                          <ProvenancePill
+                            node={vcLineage["$.financingAsk.plannedRunwayMonths"]}
+                            onInspect={() => setSelectedXRayNode(vcLineage["$.financingAsk.plannedRunwayMonths"])}
+                          />
+                        </div>
                       </td>
                       <td className="py-2.5 px-3 text-neutral-500">Burn rate and time to next milestone validation</td>
                     </tr>
                   </tbody>
                 </table>
               </div>
+              <CardNextSectionCue nextSectionId="section-vc-risk-gate" nextSectionLabel="Extracted Risk Flags & Human Verification Gate" />
             </CardContent>
           </Card>
-          {/* Risk Alerts */}
-          {deal.riskFlags.length > 0 && (
-            <div className="space-y-2">
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-neutral-500">
-                Automated Diligence &amp; Cap Table Risk Diagnostics
-              </h3>
-              <div className="grid gap-2">
-                {deal.riskFlags.map((rf) => (
-                  <div
-                    key={rf.id}
-                    className="flex items-start gap-2.5 rounded-lg border border-amber-200 bg-amber-50/70 p-3 text-xs text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200"
-                  >
-                    <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600 mt-0.5" />
-                    <div className="flex-1">
-                      <div className="flex items-center justify-between">
-                        <span className="font-semibold">{rf.category}</span>
-                        <Badge tone={rf.severity >= 4 ? "red" : "amber"}>
-                          Severity {rf.severity}/5
-                        </Badge>
-                      </div>
-                      <p className="mt-0.5 text-neutral-700 dark:text-neutral-300">
-                        {rf.description}
-                      </p>
-                    </div>
-                  </div>
-                ))}
+          {/* Risk Alerts & Human Verification Gate */}
+          <Card id="section-vc-risk-gate">
+            <CardHeader className="pb-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <CardTitle>Automated Diligence, Taint Conflicts &amp; Human Risk Verification Gate</CardTitle>
+                  <p className="text-xs text-neutral-500 mt-0.5">
+                    High-severity, taint-conflict, or prompt-injection flags must be verified or waived by a human operator before Syndicate Matching can proceed.
+                  </p>
+                </div>
+                {blockingRisks.length > 0 && (
+                  <Badge tone="red">{blockingRisks.length} Blocking Match</Badge>
+                )}
               </div>
-            </div>
-          )}
+            </CardHeader>
+            <CardContent className="space-y-3 pt-2">
+              {deal.riskFlags.length === 0 ? (
+                <p className="text-xs text-neutral-500">No risk flags detected.</p>
+              ) : (
+                deal.riskFlags.map((rf) => (
+                  <RiskFlagVerificationCard
+                    key={rf.id}
+                    dealId={deal.id}
+                    assetClass="VC"
+                    flag={rf}
+                    provenanceFiles={rf.sourceFileName ? [rf.sourceFileName] : []}
+                  />
+                ))
+              )}
+              <CardNextSectionCue nextSectionId="section-vc-captable" nextSectionLabel="Financing Ask & Pre-Round Capitalization" />
+            </CardContent>
+          </Card>
 
           {/* Deal Spec Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div id="section-vc-captable" className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* Financing Ask Card */}
             <Card>
               <CardHeader className="pb-3">
@@ -2516,31 +3160,55 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                 </div>
               </CardHeader>
               <CardContent className="space-y-3 pt-2 text-xs">
-                <div className="flex justify-between py-1 border-b border-neutral-100 dark:border-neutral-800">
+                <div className="flex justify-between items-center py-1 border-b border-neutral-100 dark:border-neutral-800">
                   <span className="text-neutral-500">Target Raise:</span>
-                  <span className="font-semibold font-mono text-neutral-900 dark:text-neutral-100">
-                    ${ask?.targetRaiseUsd.toLocaleString() ?? "1,500,000"} USD
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-semibold font-mono text-neutral-900 dark:text-neutral-100">
+                      {ask?.targetRaiseUsd != null ? `$${ask.targetRaiseUsd.toLocaleString()} USD` : "Unspecified"}
+                    </span>
+                    <ProvenancePill
+                      node={vcLineage["$.financingAsk.targetRaiseUsd"]}
+                      onInspect={() => setSelectedXRayNode(vcLineage["$.financingAsk.targetRaiseUsd"])}
+                    />
+                  </div>
                 </div>
-                <div className="flex justify-between py-1 border-b border-neutral-100 dark:border-neutral-800">
+                <div className="flex justify-between items-center py-1 border-b border-neutral-100 dark:border-neutral-800">
                   <span className="text-neutral-500">Instrument Type:</span>
-                  <span className="font-medium text-neutral-900 dark:text-neutral-100">
-                    {ask?.instrumentType.replaceAll("_", " ") ?? "POST MONEY SAFE"}
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-medium text-neutral-900 dark:text-neutral-100">
+                      {ask?.instrumentType ? ask.instrumentType.replaceAll("_", " ") : "Unspecified"}
+                    </span>
+                    <ProvenancePill
+                      node={vcLineage["$.financingAsk.instrumentType"]}
+                      onInspect={() => setSelectedXRayNode(vcLineage["$.financingAsk.instrumentType"])}
+                    />
+                  </div>
                 </div>
-                <div className="flex justify-between py-1 border-b border-neutral-100 dark:border-neutral-800">
+                <div className="flex justify-between items-center py-1 border-b border-neutral-100 dark:border-neutral-800">
                   <span className="text-neutral-500">Valuation Cap:</span>
-                  <span className="font-semibold font-mono text-neutral-900 dark:text-neutral-100">
-                    {ask?.valuationCapUsd
-                      ? `$${ask.valuationCapUsd.toLocaleString()} USD`
-                      : "Uncapped / Market Lead"}
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-semibold font-mono text-neutral-900 dark:text-neutral-100">
+                      {ask?.valuationCapUsd
+                        ? `$${ask.valuationCapUsd.toLocaleString()} USD`
+                        : "Uncapped / Market Lead"}
+                    </span>
+                    <ProvenancePill
+                      node={vcLineage["$.financingAsk.valuationCapUsd"]}
+                      onInspect={() => setSelectedXRayNode(vcLineage["$.financingAsk.valuationCapUsd"])}
+                    />
+                  </div>
                 </div>
-                <div className="flex justify-between py-1 border-b border-neutral-100 dark:border-neutral-800">
+                <div className="flex justify-between items-center py-1 border-b border-neutral-100 dark:border-neutral-800">
                   <span className="text-neutral-500">Planned Runway:</span>
-                  <span className="font-medium text-neutral-900 dark:text-neutral-100">
-                    {ask?.plannedRunwayMonths ?? 18} months
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-medium text-neutral-900 dark:text-neutral-100">
+                      {ask?.plannedRunwayMonths ?? 18} months
+                    </span>
+                    <ProvenancePill
+                      node={vcLineage["$.financingAsk.plannedRunwayMonths"]}
+                      onInspect={() => setSelectedXRayNode(vcLineage["$.financingAsk.plannedRunwayMonths"])}
+                    />
+                  </div>
                 </div>
                 <div className="flex justify-between py-1">
                   <span className="text-neutral-500">Lead Status:</span>
@@ -2560,23 +3228,41 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                 </div>
               </CardHeader>
               <CardContent className="space-y-3 pt-2 text-xs">
-                <div className="flex justify-between py-1 border-b border-neutral-100 dark:border-neutral-800">
+                <div className="flex justify-between items-center py-1 border-b border-neutral-100 dark:border-neutral-800">
                   <span className="text-neutral-500">Founders Ownership:</span>
-                  <span className="font-semibold font-mono text-neutral-900 dark:text-neutral-100">
-                    {deal.capTable?.foundersOwnershipPct ?? 80}%
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-semibold font-mono text-neutral-900 dark:text-neutral-100">
+                      {deal.capTable?.foundersOwnershipPct ?? 80}%
+                    </span>
+                    <ProvenancePill
+                      node={vcLineage["$.capTable.foundersOwnershipPct"]}
+                      onInspect={() => setSelectedXRayNode(vcLineage["$.capTable.foundersOwnershipPct"])}
+                    />
+                  </div>
                 </div>
-                <div className="flex justify-between py-1 border-b border-neutral-100 dark:border-neutral-800">
+                <div className="flex justify-between items-center py-1 border-b border-neutral-100 dark:border-neutral-800">
                   <span className="text-neutral-500">Prior Investors:</span>
-                  <span className="font-mono text-neutral-900 dark:text-neutral-100">
-                    {deal.capTable?.investorOwnershipPct ?? 10}%
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-mono text-neutral-900 dark:text-neutral-100">
+                      {deal.capTable?.investorOwnershipPct ?? 10}%
+                    </span>
+                    <ProvenancePill
+                      node={vcLineage["$.capTable.investorOwnershipPct"]}
+                      onInspect={() => setSelectedXRayNode(vcLineage["$.capTable.investorOwnershipPct"])}
+                    />
+                  </div>
                 </div>
-                <div className="flex justify-between py-1 border-b border-neutral-100 dark:border-neutral-800">
+                <div className="flex justify-between items-center py-1 border-b border-neutral-100 dark:border-neutral-800">
                   <span className="text-neutral-500">Unallocated Option Pool:</span>
-                  <span className="font-mono text-neutral-900 dark:text-neutral-100">
-                    {deal.capTable?.optionPoolPct ?? 10}%
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-mono text-neutral-900 dark:text-neutral-100">
+                      {deal.capTable?.optionPoolPct ?? 10}%
+                    </span>
+                    <ProvenancePill
+                      node={vcLineage["$.capTable.optionPoolPct"]}
+                      onInspect={() => setSelectedXRayNode(vcLineage["$.capTable.optionPoolPct"])}
+                    />
+                  </div>
                 </div>
                 <div className="flex justify-between py-1">
                   <span className="text-neutral-500">Dead Equity Audit:</span>
@@ -2589,7 +3275,7 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                     size="sm"
                     variant="outline"
                     onClick={() => {
-                      setActiveTab("captable");
+                      switchTab("captable");
                       setCapTableSubTab("safes");
                     }}
                     className="w-full text-xs gap-1.5 text-emerald-700 hover:text-emerald-800 border-emerald-300 dark:border-emerald-800 dark:text-emerald-300"
@@ -2598,12 +3284,13 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                     View SAFE Balances &amp; Cap Table Registry &rarr;
                   </Button>
                 </div>
+                <CardNextSectionCue nextSectionId="section-vc-founders" nextSectionLabel="Founders & Key Personnel" />
               </CardContent>
             </Card>
           </div>
 
           {/* Founders Grid */}
-          <div className="space-y-2">
+          <div id="section-vc-founders" className="space-y-2">
             <h3 className="text-xs font-semibold uppercase tracking-wider text-neutral-500">
               Founders &amp; Key Personnel
             </h3>
@@ -2613,17 +3300,29 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
               </p>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                {deal.founders.map((f) => (
+                {deal.founders.map((f, fIdx) => (
                   <Card key={f.id}>
                     <CardContent className="pt-4 space-y-2 text-xs">
                       <div className="flex items-center justify-between">
-                        <span className="font-semibold text-neutral-900 dark:text-neutral-100">
-                          {f.name}
-                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-semibold text-neutral-900 dark:text-neutral-100">
+                            {f.name}
+                          </span>
+                          <ProvenancePill
+                            node={vcLineage[`$.founders[${fIdx}].name`]}
+                            onInspect={() => setSelectedXRayNode(vcLineage[`$.founders[${fIdx}].name`])}
+                          />
+                        </div>
                         <Badge tone="blue">{f.role}</Badge>
                       </div>
                       <div className="space-y-1 text-neutral-500 text-[11px]">
-                        <p>Equity Ownership: {f.equityOwnershipPct}%</p>
+                        <div className="flex items-center justify-between">
+                          <span>Equity Ownership: {f.equityOwnershipPct}%</span>
+                          <ProvenancePill
+                            node={vcLineage[`$.founders[${fIdx}].equityOwnershipPct`]}
+                            onInspect={() => setSelectedXRayNode(vcLineage[`$.founders[${fIdx}].equityOwnershipPct`])}
+                          />
+                        </div>
                         <p>Technical Founder: {f.isTechnical ? "Yes" : "No"}</p>
                         <p>Repeat Founder: {f.isRepeatFounder ? "Yes" : "First-Time"}</p>
                       </div>
@@ -2632,10 +3331,11 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                 ))}
               </div>
             )}
+            <CardNextSectionCue nextSectionId="section-vc-competitors" nextSectionLabel="Competitors & Anti-Portfolio Landscape" />
           </div>
 
           {/* Competitors & Anti-Portfolio Landscape Card */}
-          <Card className="border-purple-200/80 bg-linear-to-b from-white to-purple-50/15 dark:border-purple-900/50 dark:from-neutral-900 dark:to-purple-950/10">
+          <Card id="section-vc-competitors" className="border-purple-200/80 bg-linear-to-b from-white to-purple-50/15 dark:border-purple-900/50 dark:from-neutral-900 dark:to-purple-950/10">
             <CardHeader className="pb-3 border-b border-neutral-100 dark:border-neutral-800">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-2">
@@ -2648,28 +3348,67 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Badge tone={(deal.competitors || []).length > 0 ? "purple" : "neutral"}>
-                    {(deal.competitors || []).length} Discovered
+                  <Badge tone={(competitors || []).length > 0 ? "purple" : "neutral"}>
+                    {(competitors || []).length} Discovered
                   </Badge>
                   <Button
                     size="sm"
                     variant="outline"
                     onClick={() =>
                       setActiveDslModal({
-                        agentName: "Competitor Intelligence & Anti-Portfolio Agent",
-                        agentFlow: "COMPETITOR_DISCOVERY_V2",
+                        agentName: "Competitor Intelligence & Partner Scout",
+                        agentFlow: "HIKARI-COMPETITOR-V1",
                         description:
                           "Synthesizes domain landscape, uncovers direct market rivals, identifies venture backers, and verifies HTTP source URLs.",
                         dslInput: competitorDslPayload,
-                        agentOutput: deal.competitors,
+                        agentOutput: competitors,
                         missingParameters: competitorMissingParams,
                       })
                     }
                     className="gap-1.5 text-xs text-neutral-700 hover:text-neutral-900 border-neutral-300 dark:border-neutral-700 dark:text-neutral-300"
                   >
                     <FileCode className="h-3.5 w-3.5 text-purple-600" />
-                    Inspect Agent DSL &amp; Output
+                    Inspect Competitor DSL (光 Hikari)
                   </Button>
+                  {backersWithCompetitors.length > 0 && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={isBulkResearching || Boolean(singleBackerResearching)}
+                      onClick={() => {
+                        if (unresearchedBackers.length > 0) {
+                          handleBulkResearchFunds(unresearchedBackers.map((b) => b.backerName));
+                        } else {
+                          setIsBatchBackerModalOpen(true);
+                        }
+                      }}
+                      className={`gap-1.5 text-xs font-semibold cursor-pointer ${
+                        unresearchedBackers.length > 0
+                          ? "text-white bg-purple-600 hover:bg-purple-700 dark:bg-purple-700 dark:hover:bg-purple-600 shadow-2xs border-transparent"
+                          : "text-emerald-700 hover:text-emerald-900 border-emerald-300 dark:border-emerald-800 dark:text-emerald-300 bg-emerald-50/70"
+                      }`}
+                      title={
+                        unresearchedBackers.length > 0
+                          ? `Bulk research all ${unresearchedBackers.length} new unresearched funds`
+                          : "All known backers have already been researched"
+                      }
+                    >
+                      {isBulkResearching ? (
+                        <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                      ) : unresearchedBackers.length > 0 ? (
+                        <Zap className="h-3.5 w-3.5 text-amber-300 fill-amber-300" />
+                      ) : (
+                        <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                      )}
+                      <span>
+                        {isBulkResearching && bulkResearchProgress
+                          ? `Researching (${bulkResearchProgress.current}/${bulkResearchProgress.total})…`
+                          : unresearchedBackers.length > 0
+                          ? `Bulk Research (${unresearchedBackers.length} new / ${backersWithCompetitors.length} total)`
+                          : `All ${backersWithCompetitors.length} Backers Researched`}
+                      </span>
+                    </Button>
+                  )}
                   <Button
                     size="sm"
                     variant="outline"
@@ -2691,9 +3430,29 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                   {competitorNotice}
                 </div>
               )}
+              {backerResearchNotice && (
+                <div className="mt-2 text-xs text-purple-800 dark:text-purple-200 bg-purple-100/70 dark:bg-purple-950/60 p-2.5 rounded-lg border border-purple-200 dark:border-purple-800 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <Zap className="h-3.5 w-3.5 text-purple-600 shrink-0" />
+                    <span>{backerResearchNotice}</span>
+                  </div>
+                  {backerResearchNotice.startsWith("✓") && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        switchTab("syndicate");
+                        setTimeout(() => scrollToSectionWithHighlight("section-vc-syndicate"), 120);
+                      }}
+                      className="font-semibold text-purple-700 hover:underline dark:text-purple-300 text-xs shrink-0 cursor-pointer"
+                    >
+                      Jump to Syndicate Matching (M8) →
+                    </button>
+                  )}
+                </div>
+              )}
             </CardHeader>
             <CardContent className="pt-4">
-              {(!deal.competitors || deal.competitors.length === 0) ? (
+              {(!competitors || competitors.length === 0) ? (
                 <div className="py-8 text-center space-y-3">
                   <Search className="mx-auto h-7 w-7 text-neutral-400" />
                   <p className="text-xs text-neutral-500 max-w-md mx-auto">
@@ -2715,8 +3474,104 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                   </Button>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-                  {deal.competitors.map((comp) => (
+                <div className="space-y-4">
+                  {backersWithCompetitors.length > 0 && (
+                    <div className="rounded-xl border border-purple-200/90 bg-linear-to-r from-purple-50/80 via-white to-blue-50/50 p-4 dark:border-purple-900/60 dark:from-purple-950/30 dark:via-neutral-900 dark:to-blue-950/20 shadow-xs">
+                      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="flex h-6 w-6 items-center justify-center rounded-md bg-purple-600 text-white text-xs shadow-xs">
+                              <Zap className="h-3.5 w-3.5" />
+                            </span>
+                            <h4 className="text-sm font-bold text-neutral-900 dark:text-neutral-100">
+                              Competitor Known Backers Intelligence
+                            </h4>
+                            <span className="inline-flex items-center rounded-full bg-purple-100 px-2 py-0.5 text-[10px] font-bold text-purple-800 dark:bg-purple-950 dark:text-purple-300 border border-purple-200 dark:border-purple-800">
+                              {backersWithCompetitors.length} Total Funds Mapped
+                            </span>
+                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800">
+                              <CheckCircle2 className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
+                              {researchedBackers.length} Researched
+                            </span>
+                            {unresearchedBackers.length > 0 ? (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800 dark:bg-amber-950 dark:text-amber-300 border border-amber-300 dark:border-amber-800 animate-pulse">
+                                <Zap className="h-2.5 w-2.5 text-amber-600" />
+                                {unresearchedBackers.length} New Unresearched
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-bold text-blue-800 dark:bg-blue-950 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
+                                ✓ All Researched & Scored
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs text-neutral-600 dark:text-neutral-400">
+                            Automate venture thesis extraction, partner discovery, and deal thesis resonance matching for funds backing your direct market rivals.
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                          <Button
+                            size="sm"
+                            disabled={isBulkResearching || Boolean(singleBackerResearching) || unresearchedBackers.length === 0}
+                            onClick={() => handleBulkResearchFunds(unresearchedBackers.map((b) => b.backerName))}
+                            className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-semibold gap-1.5 shadow-xs cursor-pointer disabled:opacity-50"
+                            title={
+                              unresearchedBackers.length > 0
+                                ? `Bulk research all ${unresearchedBackers.length} new unresearched funds sequentially`
+                                : "All mapped funds have already been researched"
+                            }
+                          >
+                            {isBulkResearching ? (
+                              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Zap className="h-3.5 w-3.5 text-amber-300 fill-amber-300" />
+                            )}
+                            <span>
+                              {isBulkResearching && bulkResearchProgress
+                                ? `Researching (${bulkResearchProgress.current}/${bulkResearchProgress.total})…`
+                                : `Bulk Research ${unresearchedBackers.length} New Funds`}
+                            </span>
+                          </Button>
+
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={isBulkResearching || Boolean(singleBackerResearching)}
+                            onClick={() => setIsBatchBackerModalOpen(true)}
+                            className="text-xs font-medium text-neutral-700 dark:text-neutral-300 border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer"
+                            title="Open detailed modal to select, filter, and inspect funds to research"
+                          >
+                            <span>Select / Configure Funds ({backersWithCompetitors.length})</span>
+                          </Button>
+                        </div>
+                      </div>
+
+                      {/* Live Progress Bar when Bulk Researching */}
+                      {isBulkResearching && bulkResearchProgress && (
+                        <div className="mt-3 pt-3 border-t border-purple-200/80 dark:border-purple-800/60 space-y-1.5">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="font-semibold text-purple-900 dark:text-purple-200 flex items-center gap-1.5">
+                              <RefreshCw className="h-3 w-3 animate-spin text-purple-600" />
+                              Analyzing [{bulkResearchProgress.current}/{bulkResearchProgress.total}]:{" "}
+                              <span className="font-mono text-purple-700 dark:text-purple-300">{bulkResearchProgress.currentFund}</span>
+                            </span>
+                            <span className="text-[11px] font-mono text-purple-700 dark:text-purple-400">
+                              {Math.round((bulkResearchProgress.current / bulkResearchProgress.total) * 100)}%
+                            </span>
+                          </div>
+                          <div className="w-full bg-purple-200/60 dark:bg-purple-950/80 rounded-full h-1.5 overflow-hidden">
+                            <div
+                              className="bg-purple-600 h-1.5 rounded-full transition-all duration-300"
+                              style={{ width: `${Math.round((bulkResearchProgress.current / bulkResearchProgress.total) * 100)}%` }}
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                  {competitors.map((comp, cIdx) => (
                     <div
                       key={comp.id}
                       className="rounded-lg border border-neutral-200/90 bg-white p-3.5 space-y-2 dark:border-neutral-800 dark:bg-neutral-900/70"
@@ -2727,6 +3582,10 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                             <h4 className="font-semibold text-neutral-900 dark:text-neutral-100 text-sm">
                               {comp.name}
                             </h4>
+                            <ProvenancePill
+                              node={vcLineage[`$.competitors[${cIdx}].name`] || vcLineage[`$.competitors.${comp.name}`]}
+                              onInspect={() => setSelectedXRayNode(vcLineage[`$.competitors[${cIdx}].name`] || vcLineage[`$.competitors.${comp.name}`])}
+                            />
                             <Badge
                               tone={
                                 comp.overlapDegree === "DIRECT"
@@ -2774,23 +3633,89 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                         </div>
                       )}
 
-                      {comp.knownInvestors && comp.knownInvestors.length > 0 && (
-                        <div className="pt-1.5 border-t border-neutral-100 dark:border-neutral-800 text-[11px]">
-                          <span className="font-medium text-neutral-500 text-[10px] uppercase tracking-wider block mb-1">
-                            Known Backers / Venture Funds:
-                          </span>
-                          <div className="flex flex-wrap gap-1">
-                            {comp.knownInvestors.map((inv, iIdx) => (
-                              <span
-                                key={iIdx}
-                                className="inline-flex items-center rounded-sm bg-purple-50 px-1.5 py-0.5 text-[10px] font-medium text-purple-700 border border-purple-200 dark:bg-purple-950/40 dark:text-purple-300 dark:border-purple-800"
-                              >
-                                {inv}
+                      {comp.knownInvestors && comp.knownInvestors.length > 0 && (() => {
+                        const compBackers = comp.knownInvestors.map((inv) => ({
+                          name: inv,
+                          status: checkFundResearchStatus(inv, deal.matches, allInvestors),
+                        }));
+                        const compUnresearched = compBackers.filter((b) => !b.status.isResearched);
+
+                        return (
+                          <div className="pt-1.5 border-t border-neutral-100 dark:border-neutral-800 text-[11px] space-y-1.5">
+                            <div className="flex items-center justify-between gap-1 flex-wrap">
+                              <span className="font-semibold text-neutral-500 text-[10px] uppercase tracking-wider flex items-center gap-1">
+                                <span>Known Backers:</span>
+                                <span className="font-mono text-[9px] text-neutral-400">({compBackers.length})</span>
                               </span>
-                            ))}
+                              <div className="flex items-center gap-1.5">
+                                {compUnresearched.length >= 2 && (
+                                  <button
+                                    type="button"
+                                    disabled={isBulkResearching || Boolean(singleBackerResearching)}
+                                    onClick={() => handleBulkResearchFunds(compUnresearched.map((b) => b.name))}
+                                    className="inline-flex items-center gap-1 rounded bg-purple-100 hover:bg-purple-200 px-1.5 py-0.5 text-[9px] font-bold text-purple-800 dark:bg-purple-950 dark:text-purple-300 dark:hover:bg-purple-900 border border-purple-300 dark:border-purple-800 cursor-pointer transition-colors"
+                                    title={`Bulk research all ${compUnresearched.length} unresearched funds backing ${comp.name}`}
+                                  >
+                                    <Zap className="h-2.5 w-2.5 text-purple-600" />
+                                    <span>Bulk Research {compUnresearched.length} New</span>
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {compBackers.map(({ name: inv, status }, iIdx) => {
+                                const isResearchingThis = singleBackerResearching === inv;
+                                return (
+                                  <span
+                                    key={iIdx}
+                                    className={`inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] font-medium border ${
+                                      status.isResearched
+                                        ? "bg-emerald-50 text-emerald-800 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800"
+                                        : "bg-purple-50 text-purple-800 border-purple-200 dark:bg-purple-950/40 dark:text-purple-300 dark:border-purple-800"
+                                    }`}
+                                  >
+                                    {status.isResearched ? (
+                                      <CheckCircle2 className="h-2.5 w-2.5 text-emerald-600 shrink-0" />
+                                    ) : (
+                                      <span className="text-[8px] font-bold uppercase text-purple-600 dark:text-purple-400 bg-purple-100 dark:bg-purple-900/60 px-1 rounded-xs">
+                                        New
+                                      </span>
+                                    )}
+                                    <span className="font-medium">{inv}</span>
+                                    {status.isResearched && status.matchScore != null && (
+                                      <span className="text-[9px] font-mono text-emerald-700 dark:text-emerald-400">
+                                        ({status.matchScore}%)
+                                      </span>
+                                    )}
+                                    <button
+                                      type="button"
+                                      disabled={Boolean(singleBackerResearching) || isBulkResearching}
+                                      onClick={() => handleResearchSingleBacker(inv)}
+                                      className={`ml-0.5 rounded px-1 py-0.2 text-[9px] font-bold cursor-pointer disabled:opacity-50 transition-colors inline-flex items-center gap-0.5 ${
+                                        status.isResearched
+                                          ? "text-emerald-700 hover:bg-emerald-200/70 dark:text-emerald-300 dark:hover:bg-emerald-900/60"
+                                          : "text-purple-700 hover:bg-purple-200/70 dark:text-purple-300 dark:hover:bg-purple-900/60"
+                                      }`}
+                                      title={status.isResearched ? `Re-run Funder Research for "${inv}"` : `Send "${inv}" to Funder Agent Research`}
+                                    >
+                                      {isResearchingThis ? (
+                                        <RefreshCw className="h-2.5 w-2.5 animate-spin" />
+                                      ) : status.isResearched ? (
+                                        <span>↻ Re-run</span>
+                                      ) : (
+                                        <>
+                                          <Zap className="h-2.5 w-2.5 text-purple-600" />
+                                          <span>Research</span>
+                                        </>
+                                      )}
+                                    </button>
+                                  </span>
+                                );
+                              })}
+                            </div>
                           </div>
-                        </div>
-                      )}
+                        );
+                      })()}
 
                       {comp.sourceUrl && (
                         <div className="pt-1 text-[10px] text-neutral-400 flex flex-wrap items-center justify-between gap-1">
@@ -2819,12 +3744,14 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                     </div>
                   ))}
                 </div>
-              )}
+              </div>
+            )}
+              <CardNextSectionCue nextSectionId="section-vc-commercial" nextSectionLabel="Commercial ICP Accounts & Leads" />
             </CardContent>
           </Card>
 
           {/* Potential Customers & Strategic Partners Card */}
-          <Card className="border-emerald-200/80 bg-linear-to-b from-white to-emerald-50/15 dark:border-emerald-900/50 dark:from-neutral-900 dark:to-emerald-950/10">
+          <Card id="section-vc-commercial" className="border-emerald-200/80 bg-linear-to-b from-white to-emerald-50/15 dark:border-emerald-900/50 dark:from-neutral-900 dark:to-emerald-950/10">
             <CardHeader className="pb-3 border-b border-neutral-100 dark:border-neutral-800">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-2">
@@ -2865,23 +3792,22 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                     onClick={() =>
                       setActiveDslModal({
                         agentName: "Executive Persona & Decision-Maker Contact Agent",
-                        agentFlow: "PERSONA_CONTACT_DISCOVERY_AND_OUTREACH_V2",
+                        agentFlow: "HAYATE-CONTACTS-V1",
                         description:
                           "Discovers real current executive decision makers and department heads matching the target buyer persona at each prospective client account.",
                         dslInput: contactDslPayload,
-                        agentOutput: allCommercialProspects.flatMap((p) =>
-                          (p.contacts || []).map((c) => ({
-                            ...c,
-                            accountName: p.name,
-                          })),
-                        ),
+                        agentOutput: allCommercialProspects.map((p) => ({
+                          prospect: p.name,
+                          category: p.category,
+                          contacts: p.contacts,
+                        })),
                         missingParameters: contactMissingParams,
                       })
                     }
                     className="gap-1.5 text-xs text-blue-700 hover:text-blue-900 border-blue-200 dark:border-blue-900/60 dark:text-blue-300"
                   >
                     <FileCode className="h-3.5 w-3.5 text-blue-600" />
-                    Inspect Contact DSL &amp; Output
+                    Inspect Contact DSL (疾風 Hayate)
                   </Button>
                   <Button
                     size="sm"
@@ -2889,18 +3815,18 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                     onClick={() =>
                       setActiveDslModal({
                         agentName: "Commercial Intelligence & Customer Mapping Agent",
-                        agentFlow: "COMMERCIAL_CLIENTS_AND_PARTNERS_V2",
+                        agentFlow: "HAYATE-COMMERCIAL-V1",
                         description:
                           "Extracts and validates direct enterprise corporate clients (buyers) and strategic distribution partners based on domain, ICP, and monetization parameters.",
                         dslInput: commercialDslPayload,
-                        agentOutput: deal.commercialProspects,
+                        agentOutput: allCommercialProspects,
                         missingParameters: commercialMissingParams,
                       })
                     }
                     className="gap-1.5 text-xs text-neutral-700 hover:text-neutral-900 border-neutral-300 dark:border-neutral-700 dark:text-neutral-300"
                   >
                     <FileCode className="h-3.5 w-3.5 text-emerald-600" />
-                    Inspect Market DSL &amp; Output
+                    Inspect Market DSL (疾風 Hayate)
                   </Button>
                   <Button
                     size="sm"
@@ -3089,7 +4015,7 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-                  {visibleCommercialProspects.map((prospect) => (
+                  {visibleCommercialProspects.map((prospect, pIdx) => (
                     <div
                       key={prospect.id}
                       className="rounded-lg border border-neutral-200/90 bg-white p-3.5 space-y-2.5 dark:border-neutral-800 dark:bg-neutral-900/70"
@@ -3100,6 +4026,10 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                             <span className="font-semibold text-xs text-neutral-900 dark:text-neutral-100">
                               {prospect.name}
                             </span>
+                            <ProvenancePill
+                              node={vcLineage[`$.commercialProspects[${pIdx}].name`] || vcLineage[`$.commercialProspects.${prospect.name}`]}
+                              onInspect={() => setSelectedXRayNode(vcLineage[`$.commercialProspects[${pIdx}].name`] || vcLineage[`$.commercialProspects.${prospect.name}`])}
+                            />
                             {prospect.websiteUrl && (
                               <a
                                 href={prospect.websiteUrl}
@@ -3185,7 +4115,7 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
 
                       {/* Persona Executive Contacts Section */}
                       {prospect.contacts && prospect.contacts.length > 0 ? (
-                        <div className="space-y-2 pt-2 border-t border-neutral-100 dark:border-neutral-800">
+                        <div id="section-vc-contacts" className="space-y-2 pt-2 border-t border-neutral-100 dark:border-neutral-800">
                           <div className="flex items-center justify-between">
                             <span className="text-[11px] font-semibold uppercase tracking-wider text-blue-700 dark:text-blue-400 flex items-center gap-1.5">
                               <UserCheck className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" />
@@ -3215,10 +4145,23 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                               >
                                 <div className="flex items-start justify-between gap-2">
                                   <div>
-                                    <div className="flex items-center gap-1.5">
+                                    <div className="flex items-center gap-1.5 flex-wrap">
                                       <span className="font-semibold text-neutral-900 dark:text-neutral-100 text-xs">
                                         {contact.fullName}
                                       </span>
+                                      <ProvenancePill
+                                        node={
+                                          vcLineage[`$.contacts.${contact.fullName}`] ||
+                                          vcLineage[`$.commercialProspects.${prospect.name}.contacts.${contact.fullName}`] ||
+                                          vcLineage[`$.commercialProspects[${pIdx}].contacts[${contact.id}].fullName`]
+                                        }
+                                        onInspect={() =>
+                                          setSelectedXRayNode(
+                                            vcLineage[`$.contacts.${contact.fullName}`] ||
+                                            vcLineage[`$.commercialProspects.${prospect.name}.contacts.${contact.fullName}`]
+                                          )
+                                        }
+                                      />
                                       {contact.linkedinUrl && (
                                         <a
                                           href={contact.linkedinUrl}
@@ -3271,6 +4214,48 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
                                       Personalized Outreach Hook:
                                     </span>
                                     <p className="italic leading-relaxed">{contact.outreachAngle}</p>
+                                  </div>
+                                )}
+
+                                {/* Web Recon Provenance Source Link & Cached Page Snapshot */}
+                                {(contact.sourceUrl || prospect.sourceUrl || prospect.websiteUrl) && (
+                                  <div className="pt-1.5 border-t border-blue-100/60 dark:border-blue-900/30 flex flex-wrap items-center justify-between gap-1.5 text-[10px]">
+                                    <div className="flex items-center gap-1.5 min-w-0">
+                                      <span className="text-neutral-400 font-medium">Source:</span>
+                                      <a
+                                        href={contact.sourceUrl || prospect.sourceUrl || prospect.websiteUrl || "#"}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="inline-flex items-center gap-1 text-blue-600 dark:text-blue-400 hover:underline truncate max-w-[220px]"
+                                        title={contact.sourceUrl || prospect.sourceUrl || prospect.websiteUrl || ""}
+                                      >
+                                        <ExternalLink className="h-2.5 w-2.5 shrink-0" />
+                                        <span className="truncate">
+                                          {(contact.sourceUrl || prospect.sourceUrl || prospect.websiteUrl || "").replace(/^https?:\/\/(www\.)?/, "")}
+                                        </span>
+                                      </a>
+                                      {contact.sourceHttpStatus && (
+                                        <span
+                                          className={`px-1 py-0.2 rounded font-mono text-[9px] ${
+                                            contact.sourceHttpStatus >= 200 && contact.sourceHttpStatus < 400
+                                              ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-400"
+                                              : "bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-400"
+                                          }`}
+                                          title={`HTTP ${contact.sourceHttpStatus} status audit`}
+                                        >
+                                          HTTP {contact.sourceHttpStatus}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => setCachedSnapshotUrl(contact.sourceUrl || prospect.sourceUrl || prospect.websiteUrl || "")}
+                                      className="inline-flex items-center gap-1 text-[9px] font-medium text-neutral-500 hover:text-neutral-900 dark:hover:text-white px-1.5 py-0.5 rounded bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 shadow-2xs hover:bg-neutral-50 transition-colors"
+                                      title="Inspect local offline snapshot cached during agent recon"
+                                    >
+                                      <FileCode className="h-2.5 w-2.5 text-blue-500" />
+                                      Cached Page
+                                    </button>
                                   </div>
                                 )}
                               </div>
@@ -3339,6 +4324,87 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
               )}
             </CardContent>
           </Card>
+
+          <CardNextSectionCue nextSectionId="section-vc-dsl-inspector" nextSectionLabel="Unified Tab DSL Inspector & Versions" />
+
+          {/* Unified Tab 2 DSL Specifications, Persistent Versions & Field Guide */}
+          <div id="section-vc-dsl-inspector">
+            <TabDslInspectorPanel
+            assetClass="STARTUP"
+            dealId={deal.id}
+            dealName={deal.companyName}
+            tabKey="spec"
+            tabLabel="2. Deal Spec, Diligence & Risk Gate"
+            items={[
+              {
+                id: "deal-spec",
+                dslType: "STARTUP_DEAL_SPEC",
+                title: "Reconciled Startup Deal Specification",
+                subtitle: "Core venture profile, industry narrative, sub-industries, jurisdiction, and asks",
+                payload: {
+                  companyName: deal.companyName,
+                  stage: deal.stage,
+                  primaryVertical: deal.primaryVertical,
+                  industry: deal.industry,
+                  subIndustries: deal.subIndustries || [],
+                  targetCustomerProfile: deal.targetCustomerProfile,
+                  businessModel: deal.businessModel,
+                  legalEntityJurisdiction: deal.legalEntityJurisdiction,
+                  targetRaiseUsd: ask?.targetRaiseUsd ?? null,
+                  valuationCapUsd: ask?.valuationCapUsd ?? null,
+                  instrumentType: ask?.instrumentType || "SAFE",
+                  plannedRunwayMonths: ask?.plannedRunwayMonths ?? null,
+                  foundersOwnershipPct: deal.capTable?.foundersOwnershipPct ?? null,
+                  investorOwnershipPct: deal.capTable?.investorOwnershipPct ?? null,
+                  optionPoolPct: deal.capTable?.optionPoolPct ?? null,
+                  safesNotesOutstandingUsd: deal.capTable?.safesNotesOutstandingUsd ?? 0,
+                },
+                fieldsDoc: VC_DEAL_SPEC_FIELDS,
+                onSavePayload: async () => {
+                  router.refresh();
+                },
+              },
+              {
+                id: "competitors",
+                dslType: "COMPETITORS_SPEC",
+                title: "Competitor Intelligence (光 Hikari)",
+                subtitle: `${competitors?.length || 0} mapped competitors and anti-portfolio checks`,
+                payload: (competitors || []).map((c) => ({
+                  name: c.name,
+                  overlapDegree: c.overlapDegree,
+                  description: c.description,
+                  knownInvestors: c.knownInvestors,
+                  differentiation: c.differentiation,
+                  sourceUrl: c.sourceUrl,
+                })),
+                onSavePayload: async () => {
+                  router.refresh();
+                },
+              },
+              {
+                id: "commercial-prospects",
+                dslType: "COMMERCIAL_ICP_SPEC",
+                title: "Commercial ICP Accounts & Leads (疾風 Hayate)",
+                subtitle: `${commercialProspects?.length || 0} target enterprise accounts`,
+                payload: (commercialProspects || []).map((p) => ({
+                  name: p.name,
+                  category: p.category,
+                  acvTier: p.estimatedAcvTier,
+                  useCaseFit: p.useCaseFit,
+                  contacts: p.contacts?.map((c) => ({
+                    fullName: c.fullName,
+                    title: c.title,
+                    roleCategory: c.roleCategory,
+                    linkedinUrl: c.linkedinUrl,
+                  })),
+                })),
+                onSavePayload: async () => {
+                  router.refresh();
+                },
+              },
+            ]}
+          />
+          </div>
         </div>
       )}
 
@@ -3346,7 +4412,7 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
       {/* TAB 3: PRO-FORMA DILUTION & BENCHMARK */}
       {activeTab === "benchmark" && (
         <div className="space-y-6">
-          <Card>
+          <Card id="section-vc-benchmark">
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -3454,98 +4520,238 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
               )}
             </CardContent>
           </Card>
+
+          {/* Unified Tab 4 DSL Specifications, Versions & Field Guide */}
+          <TabDslInspectorPanel
+            assetClass="STARTUP"
+            dealId={deal.id}
+            dealName={deal.companyName}
+            tabKey="blueprint"
+            tabLabel="4. Syndicate Blueprint & Term Sheet Benchmark"
+            items={[
+              {
+                id: "blueprint",
+                dslType: "SYNDICATE_BLUEPRINT_SPEC",
+                title: "Syndicate Blueprint & Dilution Model (大輝 Daiki)",
+                subtitle: "Allocation split, recommended cap, post-money valuation, and dilution matrix",
+                payload: latestBlueprint
+                  ? {
+                      targetRaiseUsd: latestBlueprint.targetRaiseUsd,
+                      leadAllocationUsd: latestBlueprint.leadAllocationUsd,
+                      syndicateAllocationUsd: latestBlueprint.syndicateAllocationUsd,
+                      angelAllocationUsd: latestBlueprint.angelAllocationUsd,
+                      recommendedValuationCapUsd: latestBlueprint.recommendedValuationCapUsd,
+                      synthesisSummary: latestBlueprint.synthesisSummary,
+                      dilutionModel: latestBlueprint.dilutionModelJson,
+                    }
+                  : { status: "PENDING_BENCHMARK_EXECUTION" },
+                onSavePayload: async () => {
+                  router.refresh();
+                },
+              },
+            ]}
+          />
         </div>
       )}
 
-      {/* TAB 4: DATA ROOM DOCUMENTS */}
+      {/* TAB 1: DATA ROOM DOCUMENTS */}
       {activeTab === "documents" && (
         <div className="space-y-6">
-          <div className="space-y-3">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-neutral-500">
-              Uploaded Documents &amp; Models ({deal.documents.length})
-            </h3>
+          <TabSectionNav
+            sections={[
+              {
+                id: "section-vc-documents",
+                label: "Data Room Documents",
+                count: deal.documents.length,
+              },
+              {
+                id: "section-vc-extractions",
+                label: "Upload Pitch Decks & Sheets",
+              },
+              {
+                id: "section-vc-provenance",
+                label: "Data Lineage & Traceability",
+              },
+              {
+                id: "section-vc-dsl-inspector-tab1",
+                label: "Extraction DSL Inspector",
+              },
+            ]}
+          />
+
+          <div id="section-vc-documents" className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-neutral-500">
+                  Uploaded Documents &amp; Models ({deal.documents.length})
+                </h3>
+                <p className="text-xs text-neutral-500 mt-0.5">
+                  Documents classified as <strong>AUDITED_PROOF</strong> (cap tables, incorporation docs, SAFE agreements, audited financials) automatically override conflicting claims from <strong>UNVERIFIED_CLAIM</strong> pitch decks.
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setIsTaintPolicyOpen(true)}
+                className="text-xs gap-1.5"
+              >
+                Configure Taint Policy
+              </Button>
+            </div>
             {deal.documents.length === 0 ? (
               <p className="text-xs text-neutral-400">No documents uploaded yet.</p>
             ) : (
               <div className="grid gap-2">
-                {deal.documents.map((doc) => (
-                  <div
-                    key={doc.id}
-                    className="flex items-center justify-between rounded-lg border border-neutral-200 bg-white p-3 text-xs dark:border-neutral-800 dark:bg-neutral-900"
-                  >
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      {doc.blobUrl.includes("docs.google.com") ? (
-                        <Globe className="h-4 w-4 shrink-0 text-emerald-600" />
-                      ) : doc.fileName.endsWith(".xlsx") || doc.fileName.endsWith(".csv") ? (
-                        <FileSpreadsheet className="h-4 w-4 shrink-0 text-emerald-600" />
-                      ) : (
-                        <FileText className="h-4 w-4 shrink-0 text-blue-600" />
-                      )}
-                      <div className="min-w-0">
-                        <p className="truncate font-medium text-neutral-900 dark:text-neutral-100">
-                          {doc.fileName}
-                        </p>
-                        <p className="text-[11px] text-neutral-400">
-                          {doc.sizeBytes > 0
-                            ? `${Math.round(doc.sizeBytes / 1024)} KB · `
-                            : ""}
-                          Uploaded {new Date(doc.uploadedAt).toLocaleDateString()}
-                        </p>
+                {deal.documents.map((doc) => {
+                  const docTaint = resolveDocumentTaint(
+                    doc.documentTypes ?? [],
+                    doc.taintOverride,
+                  );
+                  return (
+                    <div
+                      key={doc.id}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-neutral-200 bg-white p-3 text-xs dark:border-neutral-800 dark:bg-neutral-900"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        {doc.blobUrl.includes("docs.google.com") ? (
+                          <Globe className="h-4 w-4 shrink-0 text-emerald-600" />
+                        ) : doc.fileName.endsWith(".xlsx") || doc.fileName.endsWith(".csv") ? (
+                          <FileSpreadsheet className="h-4 w-4 shrink-0 text-emerald-600" />
+                        ) : (
+                          <FileText className="h-4 w-4 shrink-0 text-blue-600" />
+                        )}
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="truncate font-medium text-neutral-900 dark:text-neutral-100">
+                              {doc.fileName}
+                            </p>
+                            <Badge tone={docTaint === "AUDITED_PROOF" ? "green" : "amber"}>
+                              {docTaint}
+                            </Badge>
+                          </div>
+                          <p className="text-[11px] text-neutral-400">
+                            {doc.sizeBytes > 0
+                              ? `${Math.round(doc.sizeBytes / 1024)} KB · `
+                              : ""}
+                            Uploaded {new Date(doc.uploadedAt).toLocaleDateString()}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {doc.documentTypes.map((dt) => (
+                          <Badge key={dt} tone="neutral">
+                            {dt.replace("VC_", "")}
+                          </Badge>
+                        ))}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setSelectedDocForExtraction(doc)}
+                          className="h-7 text-[11px] px-2 gap-1 text-neutral-700 hover:text-neutral-900 dark:text-neutral-300"
+                          title="View or Edit Raw Extracted JSON"
+                        >
+                          <FileCode className="h-3 w-3 text-blue-600" />
+                          View / Edit JSON
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setSelectedDocForExtraction(doc)}
+                          className="h-7 text-[11px] px-2 gap-1 text-neutral-700 hover:text-neutral-900 dark:text-neutral-300"
+                          title="Re-run AI Extraction for this document"
+                        >
+                          <RefreshCw className="h-3 w-3 text-emerald-600" />
+                          Re-run
+                        </Button>
+                        {doc.blobUrl.startsWith("http") && (
+                          <a
+                            href={`/api/vc-deals/${deal.id}/documents/${doc.id}/file`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="p-1 text-neutral-400 hover:text-neutral-700"
+                            title="Open document"
+                          >
+                            <ExternalLink className="h-3.5 w-3.5" />
+                          </a>
+                        )}
                       </div>
                     </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      {doc.documentTypes.map((dt) => (
-                        <Badge key={dt} tone="neutral">
-                          {dt.replace("VC_", "")}
-                        </Badge>
-                      ))}
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setSelectedDocForExtraction(doc)}
-                        className="h-7 text-[11px] px-2 gap-1 text-neutral-700 hover:text-neutral-900 dark:text-neutral-300"
-                        title="View or Edit Raw Extracted JSON"
-                      >
-                        <FileCode className="h-3 w-3 text-blue-600" />
-                        View / Edit JSON
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setSelectedDocForExtraction(doc)}
-                        className="h-7 text-[11px] px-2 gap-1 text-neutral-700 hover:text-neutral-900 dark:text-neutral-300"
-                        title="Re-run AI Extraction for this document"
-                      >
-                        <RefreshCw className="h-3 w-3 text-emerald-600" />
-                        Re-run
-                      </Button>
-                      {doc.blobUrl.startsWith("http") && (
-                        <a
-                          href={`/api/vc-deals/${deal.id}/documents/${doc.id}/file`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="p-1 text-neutral-400 hover:text-neutral-700"
-                          title="Open document"
-                        >
-                          <ExternalLink className="h-3.5 w-3.5" />
-                        </a>
-                      )}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
 
+          <CardNextSectionCue nextSectionId="section-vc-extractions" nextSectionLabel="Upload Pitch Decks, Cap Tables or Sheets" />
+
           {/* Add more documents dropzone */}
-          <div className="pt-2">
+          <div id="section-vc-extractions" className="pt-2">
             <h4 className="text-xs font-semibold uppercase tracking-wider text-neutral-500 mb-2">
               Add More Pitch Decks, Cap Tables or Google Sheets
             </h4>
             <VcUploadDropzone existingDealId={deal.id} />
           </div>
+
+          <CardNextSectionCue nextSectionId="section-vc-provenance" nextSectionLabel="Data Lineage & Traceability Matrix" />
+
+          {/* Full Lineage & Provenance Audit Table */}
+          <div id="section-vc-provenance" className="rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900 space-y-4">
+            <div className="flex items-center justify-between pb-2 border-b border-neutral-100 dark:border-neutral-800">
+              <div>
+                <h4 className="text-xs font-semibold uppercase tracking-wider text-neutral-500">
+                  Data Room Lineage &amp; Evidentiary Traceability
+                </h4>
+                <p className="text-xs text-neutral-500 mt-0.5">
+                  Every data point entering the deterministic DSL is strictly tracked across 5 causal hops: source evidence, LLM telemetry, merge arbitration, human governance, and downstream funder gates.
+                </p>
+              </div>
+              <Badge tone="purple">Full Traceability</Badge>
+            </div>
+            <DataLineageMatrix
+              fieldLineage={vcLineage}
+              onInspectNode={(node) => setSelectedXRayNode(node)}
+            />
+          </div>
+
+          <CardNextSectionCue nextSectionId="section-vc-dsl-inspector-tab1" nextSectionLabel="Consolidated Document Extractions DSL Inspector" />
+
+          {/* Unified Tab 1 DSL Specifications & Versions */}
+          <div id="section-vc-dsl-inspector-tab1">
+            <TabDslInspectorPanel
+              assetClass="STARTUP"
+              dealId={deal.id}
+              dealName={deal.companyName}
+              tabKey="dataroom"
+              tabLabel="1. Data Room & Taint Policy"
+              items={[
+                {
+                  id: "extractions",
+                  dslType: "EXTRACTION_PAYLOAD",
+                  title: "Consolidated Document Extractions & Taint",
+                  subtitle: `${deal.documents.length} data room files parsed with verbatim quotes`,
+                  payload: deal.documents.map((d) => ({
+                    fileName: d.fileName,
+                    documentTypes: d.documentTypes,
+                    resolvedTaint: resolveDocumentTaint(d.documentTypes, d.taintOverride),
+                    extractedRaw: d.extractedRaw,
+                  })),
+                  onSavePayload: async () => {
+                    router.refresh();
+                  },
+                },
+              ]}
+            />
+          </div>
         </div>
       )}
+
+      {/* Taint Policy Drawer */}
+      <TaintPolicyDrawer
+        isOpen={isTaintPolicyOpen}
+        onClose={() => setIsTaintPolicyOpen(false)}
+        assetClass="VC"
+        documents={deal.documents}
+      />
 
       {/* Edit Deal Spec Modal */}
       {isEditDealOpen && (
@@ -3606,6 +4812,29 @@ export function VcDealWorkspaceTabs({ deal }: VcDealWorkspaceTabsProps) {
           }}
         />
       )}
+
+      {/* Batch Backer Research Modal */}
+      <BatchBackerResearchModal
+        isOpen={isBatchBackerModalOpen}
+        onClose={() => setIsBatchBackerModalOpen(false)}
+        dealId={deal.id}
+        companyName={deal.companyName}
+        backers={backersWithCompetitors}
+        onCompleted={() => {
+          setIsBatchBackerModalOpen(false);
+          jumpToWindow("syndicate", "section-vc-syndicate");
+          router.refresh();
+        }}
+      />
+
+      {/* Split-Screen Provenance X-Ray Drawer */}
+      <ProvenanceXRayDrawer
+        isOpen={Boolean(selectedXRayNode)}
+        onClose={() => setSelectedXRayNode(null)}
+        node={selectedXRayNode}
+        dealId={deal.id}
+        assetClass="STARTUP"
+      />
     </div>
   );
 }

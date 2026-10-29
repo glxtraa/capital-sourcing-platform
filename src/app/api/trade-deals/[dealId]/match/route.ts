@@ -3,14 +3,22 @@ import { db } from "@/lib/db";
 import { matchTradeDeal } from "@/lib/trade-matching";
 import { reconcileTradeExtractions } from "@/agents/trade/trade-reconciliation";
 import type { TradeDocumentExtraction } from "@/dsl/trade";
+import { isBlockingRiskFlag } from "@/dsl/provenance";
+import { getTaintPolicyMap } from "@/lib/taint-policy";
 
 export const maxDuration = 30;
 
 export async function POST(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ dealId: string }> },
 ) {
   const { dealId } = await params;
+  let body: any = {};
+  try {
+    body = await req.json();
+  } catch {
+    // optional body
+  }
 
   const deal = await db.tradeDeal.findUnique({
     where: { id: dealId },
@@ -19,6 +27,7 @@ export async function POST(
       parties: true,
       contractLegs: true,
       financingAsks: true,
+      riskFlags: true,
     },
   });
 
@@ -26,14 +35,29 @@ export async function POST(
     return NextResponse.json({ error: "Trade deal not found" }, { status: 404 });
   }
 
+  const blockingFlags = deal.riskFlags.filter((rf) => isBlockingRiskFlag(rf));
+  if (blockingFlags.length > 0) {
+    return NextResponse.json(
+      {
+        error: `Matching blocked: ${blockingFlags.length} high-severity or security risk flag(s) require Human Verification ("Verify Safe" or "Waive with Notes") in Step 2 before running Capital Matching.`,
+        blockingFlags,
+      },
+      { status: 409 },
+    );
+  }
+
   await db.tradeDeal.update({ where: { id: dealId }, data: { status: "MATCHING" } });
 
   try {
+    const policyMap = await getTaintPolicyMap("TRADE");
     const extractions = deal.documents
-      .map((d) => d.extractedRaw)
-      .filter(Boolean) as unknown as TradeDocumentExtraction[];
+      .filter((d) => Boolean(d.extractedRaw))
+      .map((d) => ({
+        ...(d.extractedRaw as unknown as TradeDocumentExtraction),
+        _taintOverride: d.taintOverride,
+      }));
 
-    const reconciliation = reconcileTradeExtractions(deal.id, deal.name, extractions);
+    const reconciliation = reconcileTradeExtractions(deal.id, deal.name, extractions, policyMap);
     if (!reconciliation.tradeDealSpec) {
       return NextResponse.json(
         { error: "Trade deal has not been reconciled. Please run reconcile first." },
@@ -49,8 +73,11 @@ export async function POST(
       reconciliation.tradeDealSpec,
       funders,
       deal.documents,
+      { relaxInferredBlockers: Boolean(body?.relaxInferredBlockers) },
     );
 
+    // Collect all matches across Umbrella and Modular Legs
+    // Keep EXCLUDED matches so users can inspect reasons why a funder did not qualify!
     const matchesToCreate = [
       ...matchResult.umbrellaMatches.map((m) => ({
         dealId,
@@ -60,42 +87,48 @@ export async function POST(
         rationale: m.rationale,
         isTier1: m.isTier1,
       })),
-      ...matchResult.modularMatches.supplierLegMatches
-        .filter((m) => m.verdict === "POSSIBLE")
-        .map((m) => ({
-          dealId,
-          funderId: m.funderId,
-          isUmbrella: false,
-          verdict: m.verdict,
-          rationale: `[Supplier Leg] ${m.rationale}`,
-          isTier1: false,
-        })),
-      ...matchResult.modularMatches.traderLegMatches
-        .filter((m) => m.verdict === "POSSIBLE")
-        .map((m) => ({
-          dealId,
-          funderId: m.funderId,
-          isUmbrella: false,
-          verdict: m.verdict,
-          rationale: `[Trader Leg] ${m.rationale}`,
-          isTier1: false,
-        })),
-      ...matchResult.modularMatches.buyerLegMatches
-        .filter((m) => m.verdict === "POSSIBLE")
-        .map((m) => ({
-          dealId,
-          funderId: m.funderId,
-          isUmbrella: false,
-          verdict: m.verdict,
-          rationale: `[Buyer Leg] ${m.rationale}`,
-          isTier1: false,
-        })),
+      ...matchResult.modularMatches.supplierLegMatches.map((m) => ({
+        dealId,
+        funderId: m.funderId,
+        isUmbrella: false,
+        verdict: m.verdict,
+        rationale: `[Supplier Leg] ${m.rationale}`,
+        isTier1: false,
+      })),
+      ...matchResult.modularMatches.traderLegMatches.map((m) => ({
+        dealId,
+        funderId: m.funderId,
+        isUmbrella: false,
+        verdict: m.verdict,
+        rationale: `[Trader Leg] ${m.rationale}`,
+        isTier1: false,
+      })),
+      ...matchResult.modularMatches.buyerLegMatches.map((m) => ({
+        dealId,
+        funderId: m.funderId,
+        isUmbrella: false,
+        verdict: m.verdict,
+        rationale: `[Buyer Leg] ${m.rationale}`,
+        isTier1: false,
+      })),
     ];
 
-    // Deduplicate by (dealId, funderId)
-    const uniqueMatches = Array.from(
-      new Map(matchesToCreate.map((item) => [item.funderId, item])).values(),
-    );
+    // Deduplicate by funderId (prioritize GOOD/POSSIBLE over EXCLUDED, and Umbrella over Modular)
+    const scoreVerdict = (v: string) => (v === "GOOD" ? 3 : v === "POSSIBLE" ? 2 : 1);
+    const matchMap = new Map<string, typeof matchesToCreate[0]>();
+    for (const item of matchesToCreate) {
+      const existing = matchMap.get(item.funderId);
+      if (!existing) {
+        matchMap.set(item.funderId, item);
+      } else {
+        const scoreExisting = scoreVerdict(existing.verdict) + (existing.isUmbrella ? 1 : 0);
+        const scoreNew = scoreVerdict(item.verdict) + (item.isUmbrella ? 1 : 0);
+        if (scoreNew > scoreExisting) {
+          matchMap.set(item.funderId, item);
+        }
+      }
+    }
+    const uniqueMatches = Array.from(matchMap.values());
 
     // Persist matches transactionally
     await db.$transaction(async (tx) => {

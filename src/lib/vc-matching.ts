@@ -1,4 +1,6 @@
 import type { StartupInvestor, UploadedStartupDocument } from "@prisma/client";
+import { isJurisdictionAccepted } from "@/lib/jurisdiction-normalizer";
+import { resolveFunderCriterionProvenance } from "@/dsl/provenance";
 import type {
   StartupDealSpec,
   SyndicateRoundMatchingResult,
@@ -7,33 +9,8 @@ import type {
   MatchCriterion,
 } from "@/dsl/vc";
 
-function matchesJurisdiction(acceptedList: string[], target: string | null): boolean {
-  if (!target) return true;
-  const t = target.toLowerCase().replace(/[_-]/g, " ").trim();
-  if (
-    acceptedList.some((j) => {
-      const norm = j.toLowerCase().replace(/[_-]/g, " ").trim();
-      return norm === "any" || norm === "global" || norm === "any / global" || norm === "any global" || norm === "all";
-    })
-  ) {
-    return true;
-  }
-
-  const ukTerms = ["london", "uk", "united kingdom", "england", "great britain", "gb", "europe"];
-  const usTerms = ["delaware", "us", "usa", "united states", "california", "new york", "san francisco", "bay area"];
-  const sgTerms = ["singapore", "sg", "southeast asia", "sea"];
-  const hkTerms = ["hong kong", "hk", "hongkong", "hksar", "greater bay area", "apac"];
-
-  return acceptedList.some((j) => {
-    const item = j.toLowerCase().replace(/[_-]/g, " ").trim();
-    if (item === t) return true;
-    if (item.includes(t) || t.includes(item)) return true;
-    if (ukTerms.some((u) => t.includes(u)) && ukTerms.some((u) => item.includes(u))) return true;
-    if (usTerms.some((u) => t.includes(u)) && usTerms.some((u) => item.includes(u))) return true;
-    if (sgTerms.some((u) => t.includes(u)) && sgTerms.some((u) => item.includes(u))) return true;
-    if (hkTerms.some((u) => t.includes(u)) && hkTerms.some((u) => item.includes(u))) return true;
-    return false;
-  });
+function matchesJurisdiction(acceptedList: string[], target?: string | null): boolean {
+  return isJurisdictionAccepted(acceptedList, target ?? null);
 }
 
 function matchesSector(
@@ -81,13 +58,198 @@ function matchesArr(
  * Tier 3: Strategic Operator Angels (value-add checks, domain network)
  * Tier 4: Cohort Accelerators (Y Combinator, Techstars, standard deals)
  */
+/**
+ * Evaluates startup investor criteria for a single investor against a startup deal spec.
+ */
+export function evaluateStartupInvestorCriteria(
+  inv: StartupInvestor,
+  spec: {
+    stage: string;
+    primaryVertical: string;
+    industry?: string | null;
+    legalEntityJurisdiction?: string | null;
+    tractionArrUsd?: number | null;
+    competitors?: Array<{ name: string; overlapDegree?: string; knownInvestors?: string[] }>;
+    companyName?: string;
+  },
+): MatchCriterion[] {
+  const stageOk = inv.targetStages.includes(spec.stage as any);
+  const sectorResult = matchesSector(inv.preferredSectors, inv.excludedSectors, spec.primaryVertical as any);
+  const geoOk = matchesJurisdiction(inv.acceptedJurisdictions, spec.legalEntityJurisdiction);
+  const arrResult = matchesArr(inv.minArrUsd, spec.tractionArrUsd ?? null);
+  const isFundingIndustry = inv.activelyFundingIndustry ?? true;
+
+  // Anti-portfolio checks
+  const selfCompanyConflict = (spec.companyName ? inv.portfolioCompanies.find(
+    (p) => p.toLowerCase().trim() === (spec.companyName || "").toLowerCase().trim(),
+  ) : null);
+
+  const rivalFromPortfolio = (spec.competitors || []).find((comp) =>
+    inv.portfolioCompanies.some((p) => {
+      const pNorm = p.toLowerCase().trim();
+      const cNorm = comp.name.toLowerCase().trim();
+      return pNorm === cNorm || pNorm.includes(cNorm) || cNorm.includes(pNorm);
+    }),
+  );
+
+  const rivalBackedByThisInvestor = (spec.competitors || []).find((comp) =>
+    (comp.knownInvestors || []).some((ki) => {
+      const kiNorm = ki.toLowerCase().trim();
+      const invNorm = inv.name.toLowerCase().trim();
+      return kiNorm === invNorm || kiNorm.includes(invNorm) || invNorm.includes(kiNorm);
+    }),
+  );
+
+  const compInvestments = Array.isArray(inv.competitorInvestments)
+    ? (inv.competitorInvestments as any[])
+    : [];
+
+  const isExplicitNoConflict = (ci: any) => {
+    if (ci.conflictSeverity === "NONE") return true;
+    const n = (ci.notes || "").toLowerCase();
+    const name = (ci.competitorName || "").toLowerCase();
+    if (n.includes("no conflict") || n.includes("not in portfolio") || n.includes("none")) return true;
+    if (name.includes("no conflict") || name.includes("none")) return true;
+    return false;
+  };
+
+  const directCompetitorInvestment = compInvestments.find(
+    (ci) =>
+      !isExplicitNoConflict(ci) &&
+      (ci.conflictSeverity === "DIRECT_CONFLICT" ||
+        (spec.competitors || []).some(
+          (c) =>
+            c.name.toLowerCase().trim() === ci.competitorName?.toLowerCase().trim() &&
+            c.overlapDegree === "DIRECT",
+        )),
+  );
+
+  const adjacentCompetitorInvestment = compInvestments.find(
+    (ci) =>
+      !isExplicitNoConflict(ci) &&
+      !directCompetitorInvestment &&
+      (ci.conflictSeverity === "ADJACENT_COMPETITOR" ||
+        (spec.competitors || []).some(
+          (c) => c.name.toLowerCase().trim() === ci.competitorName?.toLowerCase().trim(),
+        )),
+  );
+
+  const rawConflictingCompany =
+    selfCompanyConflict ??
+    rivalFromPortfolio?.name ??
+    (rivalBackedByThisInvestor?.overlapDegree === "DIRECT" ? rivalBackedByThisInvestor?.name : null) ??
+    directCompetitorInvestment?.competitorName;
+
+  const conflictingCompany =
+    rawConflictingCompany &&
+    !rawConflictingCompany.toLowerCase().includes("no conflict") &&
+    !rawConflictingCompany.toLowerCase().includes("none")
+      ? rawConflictingCompany
+      : null;
+
+  const portfolioConflict = Boolean(conflictingCompany);
+
+  let competitorConflictNotes: string | null = null;
+  if (portfolioConflict) {
+    if (directCompetitorInvestment?.notes) {
+      competitorConflictNotes = directCompetitorInvestment.notes;
+    } else if (rivalBackedByThisInvestor) {
+      competitorConflictNotes = `Investor is a confirmed backer of direct competitor ${rivalBackedByThisInvestor.name}.`;
+    } else if (rivalFromPortfolio) {
+      competitorConflictNotes = `Investor's active portfolio contains direct competitor ${rivalFromPortfolio.name}.`;
+    } else if (selfCompanyConflict) {
+      competitorConflictNotes = `Direct portfolio conflict with existing investment in ${selfCompanyConflict}.`;
+    } else {
+      competitorConflictNotes = `Direct portfolio conflict detected with competitor ${conflictingCompany}.`;
+    }
+  }
+
+  const criteria: MatchCriterion[] = [
+    {
+      key: "stage",
+      label: "Stage Fit",
+      status: stageOk ? "pass" : "fail",
+      detail: stageOk
+        ? `Invests in ${spec.stage} stage.`
+        : `Does not actively invest in ${spec.stage} stage.`,
+      funderSide: resolveFunderCriterionProvenance(inv, "stage"),
+    },
+    {
+      key: "sector",
+      label: "Sector Thesis",
+      status: sectorResult.ok ? "pass" : "fail",
+      detail: sectorResult.reason,
+      funderSide: resolveFunderCriterionProvenance(inv, "sector"),
+    },
+    {
+      key: "industryActivity",
+      label: "Industry Capital Deployment",
+      status: isFundingIndustry ? "pass" : "fail",
+      detail: isFundingIndustry
+        ? `Active capital deployment in ${spec.primaryVertical.replaceAll("_", " ")} and ${spec.industry || "sector"} within the last 12-24 months.`
+        : `Stale or inactive thesis: No verified recent capital deployment in ${spec.primaryVertical.replaceAll("_", " ")} over past 24 months.`,
+      funderSide: resolveFunderCriterionProvenance(inv, "industryActivity"),
+    },
+    {
+      key: "jurisdiction",
+      label: "Jurisdiction & Legal Entity",
+      status: geoOk ? "pass" : "fail",
+      detail: geoOk
+        ? `Accepts ${spec.legalEntityJurisdiction} entity.`
+        : `Entity jurisdiction ${spec.legalEntityJurisdiction} not accepted.`,
+      funderSide: resolveFunderCriterionProvenance(inv, "jurisdiction"),
+    },
+    {
+      key: "arrThreshold",
+      label: "Revenue Threshold",
+      status: arrResult.ok ? "pass" : "fail",
+      detail: arrResult.reason,
+      funderSide: resolveFunderCriterionProvenance(inv, "arrThreshold"),
+    },
+  ];
+
+  if (inv.gatingFactor) {
+    criteria.push({
+      key: "gatingFactor",
+      label: "Institutional Gating Factor",
+      status: "warning",
+      detail: inv.gatingFactor,
+      funderSide: resolveFunderCriterionProvenance(inv, "gatingFactor"),
+    });
+  }
+
+  if (adjacentCompetitorInvestment && !portfolioConflict) {
+    criteria.push({
+      key: "adjacentCompetitor",
+      label: "Adjacent Market Investment",
+      status: "warning",
+      detail:
+        adjacentCompetitorInvestment.notes ||
+        `Holds investment in adjacent company ${adjacentCompetitorInvestment.competitorName} (Non-blocking).`,
+      funderSide: resolveFunderCriterionProvenance(inv, "adjacentCompetitor"),
+    });
+  }
+
+  if (portfolioConflict) {
+    criteria.push({
+      key: "portfolioConflict",
+      label: "Anti-Portfolio Conflict",
+      status: "fail",
+      detail: competitorConflictNotes || `Direct portfolio conflict with existing investment in ${conflictingCompany}.`,
+      funderSide: resolveFunderCriterionProvenance(inv, "portfolioConflict"),
+    });
+  }
+
+  return criteria;
+}
+
 export function matchStartupDeal(
   spec: StartupDealSpec,
   investors: (StartupInvestor & { documentsRequired: { code: string; note: string | null }[] })[],
   uploadedDocs: UploadedStartupDocument[],
   customPreferences?: Partial<SyndicateCustomPreferences>,
 ): SyndicateRoundMatchingResult {
-  const targetRaiseUsd = spec.financingAsk.targetRaiseUsd || 1500000;
+  const targetRaiseUsd = spec.financingAsk.targetRaiseUsd ?? 0;
 
   // 1. Resolve Founder Syndicate Preferences (Customized or Defaults)
   const prefs: SyndicateCustomPreferences = {
@@ -237,12 +399,14 @@ export function matchStartupDeal(
         detail: stageOk
           ? `Invests in ${spec.stage} stage.`
           : `Does not actively invest in ${spec.stage} stage.`,
+        funderSide: resolveFunderCriterionProvenance(inv, "stage"),
       },
       {
         key: "sector",
         label: "Sector Thesis",
         status: sectorResult.ok ? "pass" : "fail",
         detail: sectorResult.reason,
+        funderSide: resolveFunderCriterionProvenance(inv, "sector"),
       },
       {
         key: "industryActivity",
@@ -251,6 +415,7 @@ export function matchStartupDeal(
         detail: isFundingIndustry
           ? `Active capital deployment in ${spec.primaryVertical.replaceAll("_", " ")} and ${spec.industry || "sector"} within the last 12-24 months.`
           : `Stale or inactive thesis: No verified recent capital deployment in ${spec.primaryVertical.replaceAll("_", " ")} over past 24 months.`,
+        funderSide: resolveFunderCriterionProvenance(inv, "industryActivity"),
       },
       {
         key: "jurisdiction",
@@ -259,12 +424,14 @@ export function matchStartupDeal(
         detail: geoOk
           ? `Accepts ${spec.legalEntityJurisdiction} entity.`
           : `Entity jurisdiction ${spec.legalEntityJurisdiction} not accepted.`,
+        funderSide: resolveFunderCriterionProvenance(inv, "jurisdiction"),
       },
       {
         key: "arrThreshold",
         label: "Revenue Threshold",
         status: arrResult.ok ? "pass" : "fail",
         detail: arrResult.reason,
+        funderSide: resolveFunderCriterionProvenance(inv, "arrThreshold"),
       },
     ];
 
@@ -274,6 +441,7 @@ export function matchStartupDeal(
         label: "Institutional Gating Factor",
         status: "warning",
         detail: inv.gatingFactor,
+        funderSide: resolveFunderCriterionProvenance(inv, "gatingFactor"),
       });
     }
 
@@ -285,6 +453,7 @@ export function matchStartupDeal(
         detail:
           adjacentCompetitorInvestment.notes ||
           `Holds investment in adjacent company ${adjacentCompetitorInvestment.competitorName} (Non-blocking).`,
+        funderSide: resolveFunderCriterionProvenance(inv, "adjacentCompetitor"),
       });
     }
 
@@ -294,15 +463,20 @@ export function matchStartupDeal(
         label: "Anti-Portfolio Conflict",
         status: "fail",
         detail: competitorConflictNotes || `Direct portfolio conflict with existing investment in ${conflictingCompany}.`,
+        funderSide: resolveFunderCriterionProvenance(inv, "portfolioConflict"),
       });
     }
 
-    const allPassed =
-      !portfolioConflict &&
-      isFundingIndustry &&
-      criteria.filter((c) => c.status !== "warning").every((c) => c.status === "pass");
+    const failingCriteria = criteria.filter((c) => c.status === "fail");
+    const hasHardBlocker = portfolioConflict || failingCriteria.some((c) => {
+      const method = c.funderSide?.acquisitionMethod;
+      return method === "VERIFIED_WEB_QUOTE" || method === "REGULATORY_FILING_QUOTE" || method === "HUMAN_OPERATOR_OVERRIDE";
+    });
 
-    const verdict = allPassed ? "GOOD" : "EXCLUDED";
+    const allPassed = !portfolioConflict && isFundingIndustry && failingCriteria.length === 0;
+    const isRelaxedPossible = Boolean(prefs.relaxInferredBlockers) && !hasHardBlocker;
+
+    const verdict = allPassed ? "GOOD" : isRelaxedPossible ? "POSSIBLE" : "EXCLUDED";
 
     // Multi-dimensional thesis resonance scoring (0 - 100 scale):
     let score = 0;

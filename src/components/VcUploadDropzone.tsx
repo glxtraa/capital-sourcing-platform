@@ -50,6 +50,15 @@ interface QueuedItem {
   sizeLabel?: string;
 }
 
+export interface AgenticPipelineConfig {
+  reconcile: boolean;
+  competitors: boolean;
+  commercial: boolean;
+  contacts: boolean;
+  syndicate: boolean;
+  benchmark: boolean;
+}
+
 export function VcUploadDropzone({
   existingDealId,
 }: {
@@ -62,6 +71,31 @@ export function VcUploadDropzone({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // End-to-End Autonomous Agentic Process configuration (all checked by default)
+  const [pipelineSteps, setPipelineSteps] = useState<AgenticPipelineConfig>({
+    reconcile: true,
+    competitors: true,
+    commercial: true,
+    contacts: true,
+    syndicate: true,
+    benchmark: true,
+  });
+
+  const togglePipelineStep = (step: keyof AgenticPipelineConfig) => {
+    setPipelineSteps((prev) => ({ ...prev, [step]: !prev[step] }));
+  };
+
+  const selectAllPipelineSteps = (val: boolean) => {
+    setPipelineSteps({
+      reconcile: val,
+      competitors: val,
+      commercial: val,
+      contacts: val,
+      syndicate: val,
+      benchmark: val,
+    });
+  };
 
   const addFiles = useCallback((incoming: File[]) => {
     const newItems: QueuedItem[] = [];
@@ -191,7 +225,7 @@ export function VcUploadDropzone({
         }
       }
 
-      // 2. Extract Document Metadata
+      // 2. Extract Document Metadata (Always run for ingested files)
       for (let i = 0; i < registeredDocIds.length; i++) {
         setProgress(`AI extracting startup data: Doc ${i + 1}/${registeredDocIds.length}…`);
         const extractRes = await fetch(`/api/vc-deals/${dealId}/documents/${registeredDocIds[i]}/extract`, {
@@ -202,22 +236,94 @@ export function VcUploadDropzone({
         }
       }
 
-      // 3. Reconcile Deal Spec & Auto-Infer Company, Stage, Vertical, Ask, and Cap Table
-      setProgress("AI reconciling & inferring company name, stage, vertical, jurisdiction & cap table…");
-      const reconcileRes = await fetch(`/api/vc-deals/${dealId}/reconcile`, { method: "POST" });
-      if (!reconcileRes.ok) {
-        console.warn("Reconciliation notice");
+      // 3. Reconcile Deal Spec & Auto-Infer Company, Stage, Vertical, Ask, and Cap Table (Makoto 誠)
+      if (pipelineSteps.reconcile) {
+        setProgress("AI reconciling & inferring company name, stage, vertical, jurisdiction & cap table…");
+        const reconcileRes = await fetch(`/api/vc-deals/${dealId}/reconcile`, { method: "POST" });
+        if (!reconcileRes.ok) {
+          console.warn("Reconciliation notice");
+        }
       }
 
-      // 4. Initial Syndicate Matching
-      setProgress("Synthesizing 4-Tier Syndicate & matching Lead VCs, Angels, and Accelerators…");
-      const matchRes = await fetch(`/api/vc-deals/${dealId}/match`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
-      if (!matchRes.ok) {
-        console.warn("Match synthesis notice");
+      // 4. Competitor Intelligence & Market Rivals (Hikari 光)
+      if (pipelineSteps.competitors) {
+        setProgress("Hikari (光) discovering market rivals, backed VCs & verifying HTTP sources…");
+        try {
+          const compRes = await fetch(`/api/vc-deals/${dealId}/competitors`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          });
+          if (!compRes.ok) {
+            console.warn("Competitor discovery notice");
+          }
+        } catch (e) {
+          console.warn("Competitor intelligence skipped:", e);
+        }
+      }
+
+      // 5. Commercial Prospects & Enterprise ICP Clients (Hayate 疾風)
+      if (pipelineSteps.commercial) {
+        setProgress("Hayate (疾風) hunting commercial enterprise buyers, ACV tiers & partnership hooks…");
+        try {
+          const commRes = await fetch(`/api/vc-deals/${dealId}/commercial`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          });
+          if (!commRes.ok) {
+            console.warn("Commercial discovery notice");
+          }
+        } catch (e) {
+          console.warn("Commercial discovery skipped:", e);
+        }
+      }
+
+      // 6. Executive Contact Discovery & Relevance Hooks (Hayate 疾風)
+      if (pipelineSteps.contacts) {
+        setProgress("Hayate (疾風) finding verified decision-makers, email patterns & outreach hooks…");
+        try {
+          const contactRes = await fetch(`/api/vc-deals/${dealId}/commercial/contacts`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          });
+          if (!contactRes.ok) {
+            console.warn("Contact discovery notice");
+          }
+        } catch (e) {
+          console.warn("Contact discovery skipped:", e);
+        }
+      }
+
+      // 7. 4-Tier Syndicate Matching & Investor Allocation (Daiki 大輝)
+      if (pipelineSteps.syndicate) {
+        setProgress("Daiki (大輝) synthesizing 4-Tier Syndicate & matching Lead VCs, Angels & Accelerators…");
+        const matchRes = await fetch(`/api/vc-deals/${dealId}/match`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        if (!matchRes.ok) {
+          console.warn("Match synthesis notice");
+        }
+      }
+
+      // 8. Pro-Forma Dilution & Term Sheet Benchmark (Seiji 正司)
+      if (pipelineSteps.benchmark) {
+        setProgress("Seiji (正司) calculating pro-forma dilution model & term sheet benchmarks…");
+        try {
+          const benchRes = await fetch(`/api/vc-deals/${dealId}/benchmark`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          });
+          if (!benchRes.ok) {
+            console.warn("Benchmark calculation notice");
+          }
+        } catch (e) {
+          console.warn("Benchmark calculation skipped:", e);
+        }
       }
 
       if (existingDealId) {
@@ -374,6 +480,149 @@ export function VcUploadDropzone({
           <span>{error}</span>
         </div>
       )}
+
+      {/* End-to-End Autonomous Agentic Pipeline Checklist */}
+      <div className="rounded-xl border border-emerald-200/90 bg-emerald-50/40 p-4 dark:border-emerald-900/60 dark:bg-emerald-950/20 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-emerald-200/60 dark:border-emerald-900/40 pb-2.5">
+          <div className="flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+            <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-900 dark:text-emerald-100">
+              End-to-End Autonomous Agentic Pipeline
+            </h4>
+          </div>
+          <div className="flex items-center gap-2 text-[11px]">
+            <button
+              type="button"
+              onClick={() => selectAllPipelineSteps(true)}
+              className="text-emerald-700 hover:underline font-semibold dark:text-emerald-300 cursor-pointer"
+            >
+              Select All (Full Run)
+            </button>
+            <span className="text-neutral-300 dark:text-neutral-700">|</span>
+            <button
+              type="button"
+              onClick={() => selectAllPipelineSteps(false)}
+              className="text-neutral-500 hover:underline dark:text-neutral-400 cursor-pointer"
+            >
+              Clear All
+            </button>
+          </div>
+        </div>
+
+        <p className="text-[11px] text-neutral-600 dark:text-neutral-400">
+          The platform will automatically chain and execute every selected agent step in sequence upon upload. Uncheck any step you wish to skip or run manually later.
+        </p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 pt-1">
+          {/* Step 1: Makoto Reconcile */}
+          <label className="flex items-start gap-2.5 p-2 rounded-lg border border-neutral-200/80 bg-white dark:border-neutral-800 dark:bg-neutral-900/80 cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-800/40 transition-colors">
+            <input
+              type="checkbox"
+              checked={pipelineSteps.reconcile}
+              onChange={() => togglePipelineStep("reconcile")}
+              className="mt-0.5 rounded text-emerald-600 focus:ring-emerald-500 accent-emerald-600"
+            />
+            <div className="text-xs space-y-0.5">
+              <span className="font-semibold text-neutral-900 dark:text-neutral-100 block">
+                1. Spec &amp; Cap Table (誠 Makoto)
+              </span>
+              <span className="text-[10px] text-neutral-500 dark:text-neutral-400 block">
+                Reconcile company, ask, SAFEs, and cap table
+              </span>
+            </div>
+          </label>
+
+          {/* Step 2: Hikari Competitors */}
+          <label className="flex items-start gap-2.5 p-2 rounded-lg border border-neutral-200/80 bg-white dark:border-neutral-800 dark:bg-neutral-900/80 cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-800/40 transition-colors">
+            <input
+              type="checkbox"
+              checked={pipelineSteps.competitors}
+              onChange={() => togglePipelineStep("competitors")}
+              className="mt-0.5 rounded text-emerald-600 focus:ring-emerald-500 accent-emerald-600"
+            />
+            <div className="text-xs space-y-0.5">
+              <span className="font-semibold text-neutral-900 dark:text-neutral-100 block">
+                2. Market Rivals (光 Hikari)
+              </span>
+              <span className="text-[10px] text-neutral-500 dark:text-neutral-400 block">
+                Uncover rivals, backed VCs &amp; HTTP citations
+              </span>
+            </div>
+          </label>
+
+          {/* Step 3: Hayate Commercial */}
+          <label className="flex items-start gap-2.5 p-2 rounded-lg border border-neutral-200/80 bg-white dark:border-neutral-800 dark:bg-neutral-900/80 cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-800/40 transition-colors">
+            <input
+              type="checkbox"
+              checked={pipelineSteps.commercial}
+              onChange={() => togglePipelineStep("commercial")}
+              className="mt-0.5 rounded text-emerald-600 focus:ring-emerald-500 accent-emerald-600"
+            />
+            <div className="text-xs space-y-0.5">
+              <span className="font-semibold text-neutral-900 dark:text-neutral-100 block">
+                3. ICP Buyers (疾風 Hayate)
+              </span>
+              <span className="text-[10px] text-neutral-500 dark:text-neutral-400 block">
+                Enterprise buyers, ACV tiers &amp; synergy fits
+              </span>
+            </div>
+          </label>
+
+          {/* Step 4: Hayate Contacts */}
+          <label className="flex items-start gap-2.5 p-2 rounded-lg border border-neutral-200/80 bg-white dark:border-neutral-800 dark:bg-neutral-900/80 cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-800/40 transition-colors">
+            <input
+              type="checkbox"
+              checked={pipelineSteps.contacts}
+              onChange={() => togglePipelineStep("contacts")}
+              className="mt-0.5 rounded text-emerald-600 focus:ring-emerald-500 accent-emerald-600"
+            />
+            <div className="text-xs space-y-0.5">
+              <span className="font-semibold text-neutral-900 dark:text-neutral-100 block">
+                4. Executive Contacts (疾風 Hayate)
+              </span>
+              <span className="text-[10px] text-neutral-500 dark:text-neutral-400 block">
+                Decision makers, email patterns &amp; outreach hooks
+              </span>
+            </div>
+          </label>
+
+          {/* Step 5: Daiki Syndicate */}
+          <label className="flex items-start gap-2.5 p-2 rounded-lg border border-neutral-200/80 bg-white dark:border-neutral-800 dark:bg-neutral-900/80 cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-800/40 transition-colors">
+            <input
+              type="checkbox"
+              checked={pipelineSteps.syndicate}
+              onChange={() => togglePipelineStep("syndicate")}
+              className="mt-0.5 rounded text-emerald-600 focus:ring-emerald-500 accent-emerald-600"
+            />
+            <div className="text-xs space-y-0.5">
+              <span className="font-semibold text-neutral-900 dark:text-neutral-100 block">
+                5. 4-Tier Syndicate (大輝 Daiki)
+              </span>
+              <span className="text-[10px] text-neutral-500 dark:text-neutral-400 block">
+                Lead VCs, AngelList SPVs &amp; domain angels
+              </span>
+            </div>
+          </label>
+
+          {/* Step 6: Seiji Benchmark */}
+          <label className="flex items-start gap-2.5 p-2 rounded-lg border border-neutral-200/80 bg-white dark:border-neutral-800 dark:bg-neutral-900/80 cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-800/40 transition-colors">
+            <input
+              type="checkbox"
+              checked={pipelineSteps.benchmark}
+              onChange={() => togglePipelineStep("benchmark")}
+              className="mt-0.5 rounded text-emerald-600 focus:ring-emerald-500 accent-emerald-600"
+            />
+            <div className="text-xs space-y-0.5">
+              <span className="font-semibold text-neutral-900 dark:text-neutral-100 block">
+                6. Term Benchmark (正司 Seiji)
+              </span>
+              <span className="text-[10px] text-neutral-500 dark:text-neutral-400 block">
+                Pro-forma dilution matrix &amp; round term sheet
+              </span>
+            </div>
+          </label>
+        </div>
+      </div>
 
       {/* Action Button */}
       {(!existingDealId || queuedItems.length > 0 || isSubmitting) && (

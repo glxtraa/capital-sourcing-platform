@@ -3,7 +3,7 @@ import { db } from "@/lib/db";
 import { researchStartupCompetitors } from "@/agents/vc/vc-competitor-agent";
 import { reconcileStartupExtractions } from "@/agents/vc/vc-reconciliation";
 import { matchStartupDeal } from "@/lib/vc-matching";
-import type { StartupDocumentExtraction } from "@/dsl/vc";
+import type { StartupDocumentExtraction, StartupCompetitorExtraction } from "@/dsl/vc";
 
 export const maxDuration = 300;
 
@@ -20,33 +20,11 @@ export async function GET(
 
   const deal = await db.startupDeal.findUnique({
     where: { id: dealId },
-    select: {
-      companyName: true,
-      stage: true,
-      primaryVertical: true,
-      industry: true,
-      subIndustries: true,
-      targetCustomerProfile: true,
-      businessModel: true,
-      legalEntityJurisdiction: true,
-    },
+    select: { industry: true, subIndustries: true },
   });
-
-  const dslInput = {
-    agentFlow: "COMPETITOR_INTELLIGENCE_AND_ANTI_PORTFOLIO_V2",
-    companyName: deal?.companyName ?? "",
-    stage: deal?.stage ?? "SEED",
-    primaryVertical: deal?.primaryVertical ?? "B2B_SAAS",
-    industry: deal?.industry ?? "",
-    subIndustries: deal?.subIndustries ?? [],
-    targetCustomerProfile: deal?.targetCustomerProfile ?? null,
-    businessModel: deal?.businessModel ?? null,
-    jurisdiction: deal?.legalEntityJurisdiction ?? "Delaware (US)",
-  };
 
   return NextResponse.json({
     dealId,
-    dslInput,
     industry: deal?.industry ?? null,
     subIndustries: deal?.subIndustries ?? [],
     competitors,
@@ -76,45 +54,77 @@ export async function POST(
     const ask = deal.financingAsks[0];
     const targetRaise = ask?.targetRaiseUsd ? `$${ask.targetRaiseUsd.toLocaleString()}` : "early-stage venture capital";
 
-    const docSummaries = deal.documents
-      .map((d) => (d.extractedRaw as any)?.documentSummary)
-      .filter(Boolean)
-      .join(" ");
+    // Gather rich context from uploaded startup data room documents
+    const docContextBlocks: string[] = [];
+    const deckCompetitors: StartupCompetitorExtraction[] = [];
 
-    const summaryContext = [
-      `${deal.companyName} is raising ${targetRaise} on ${ask?.instrumentType ?? "POST_MONEY_SAFE"}.`,
-      docSummaries ? `Document extraction summary: ${docSummaries}` : null,
-      deal.targetCustomerProfile ? `Target ICP / Buyer Persona: ${deal.targetCustomerProfile}` : null,
-      deal.businessModel ? `Monetization & Business Model: ${deal.businessModel}` : null,
-      `Data room files: ${deal.documents.map((d) => d.fileName).join(", ") || "Deck and model"}.`,
-    ]
-      .filter(Boolean)
-      .join("\n");
+    for (const doc of deal.documents) {
+      const raw = doc.extractedRaw as any;
+      if (raw) {
+        if (raw.documentSummary) {
+          docContextBlocks.push(`[${doc.fileName}]:\n${raw.documentSummary}`);
+        }
+        if (raw.industry) {
+          docContextBlocks.push(`[${doc.fileName} Domain]: ${raw.industry}`);
+        }
+        if (Array.isArray(raw.subIndustries) && raw.subIndustries.length > 0) {
+          docContextBlocks.push(`[${doc.fileName} Sub-sectors]: ${raw.subIndustries.join(", ")}`);
+        }
+        if (Array.isArray(raw.competitors) && raw.competitors.length > 0) {
+          for (const c of raw.competitors) {
+            if (c.name && !deckCompetitors.some((existing) => existing.name.toLowerCase() === c.name.toLowerCase())) {
+              deckCompetitors.push(c);
+            }
+          }
+        }
+      }
+    }
+
+    if (deal.targetCustomerProfile) {
+      docContextBlocks.push(`Target Customer Profile (ICP):\n${deal.targetCustomerProfile}`);
+    }
+    if (deal.businessModel) {
+      docContextBlocks.push(`Business & Monetization Model:\n${deal.businessModel}`);
+    }
+
+    const documentContext = docContextBlocks.join("\n\n");
+    const instrumentPart = ask?.instrumentType ? ` on ${ask.instrumentType}` : "";
+    const summaryContext =
+      `${deal.companyName} is raising ${targetRaise}${instrumentPart}.\n\n` +
+      documentContext;
 
     const result = await researchStartupCompetitors({
       companyName: deal.companyName,
       stage: deal.stage,
       primaryVertical: deal.primaryVertical,
       industryHint: deal.industry || undefined,
-      subIndustries: deal.subIndustries,
+      subIndustries: deal.subIndustries || [],
       targetCustomerProfile: deal.targetCustomerProfile || undefined,
       businessModel: deal.businessModel || undefined,
+      documentContext,
+      deckCompetitors,
       descriptionOrDeckSummary: summaryContext,
-      jurisdiction: deal.legalEntityJurisdiction,
+      jurisdiction: deal.legalEntityJurisdiction || undefined,
     });
 
     await db.$transaction(async (tx) => {
       // 1. Clear old competitors for this deal
       await tx.startupCompetitor.deleteMany({ where: { dealId } });
 
-      // 2. Update deal industry classification
-      await tx.startupDeal.update({
-        where: { id: dealId },
-        data: {
-          industry: result.industry,
-          subIndustries: result.subIndustries,
-        },
-      });
+      // 2. Update deal industry classification only if not already specified
+      const dataToUpdate: Record<string, any> = {};
+      if (!deal.industry || deal.industry.trim().length === 0) {
+        dataToUpdate.industry = result.industry;
+      }
+      if (!deal.subIndustries || deal.subIndustries.length === 0) {
+        dataToUpdate.subIndustries = result.subIndustries;
+      }
+      if (Object.keys(dataToUpdate).length > 0) {
+        await tx.startupDeal.update({
+          where: { id: dealId },
+          data: dataToUpdate,
+        });
+      }
 
       // 3. Persist discovered competitors
       if (result.competitors.length > 0) {
@@ -202,12 +212,16 @@ export async function POST(
       }
     }
 
+    const savedCompetitors = await db.startupCompetitor.findMany({
+      where: { dealId },
+      orderBy: { createdAt: "asc" },
+    });
+
     return NextResponse.json({
       ok: true,
-      dslInput: result.dslInput,
       industry: result.industry,
       subIndustries: result.subIndustries,
-      competitors: result.competitors,
+      competitors: savedCompetitors.length > 0 ? savedCompetitors : result.competitors,
       verifiedLinks: result.verifiedLinks,
       auditSummary: result.auditSummary,
     });

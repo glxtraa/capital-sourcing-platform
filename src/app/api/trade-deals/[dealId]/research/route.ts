@@ -168,12 +168,16 @@ export async function POST(
       where: { id: run.id },
       data: {
         status: "SUCCEEDED",
-        outputSummary: `Added/updated trade funder "${funder.name}" (${funder.id})`,
+        outputSummary: `Researched and extracted "${funder.name}" (${funder.type}). Supported legs: ${funder.supportedLegs.join(", ")}. Pricing: ${funder.indicativePricingGuidance ?? "SOFR model"}. Ticket: $${((funder.minTicketUsd ?? 0)/1e6).toFixed(1)}M-$${((funder.maxTicketUsd ?? 0)/1e6).toFixed(1)}M.`,
         finishedAt: new Date(),
       },
     });
 
-    return NextResponse.json({ funderId: funder.id, funderName: funder.name });
+    return NextResponse.json({
+      funderId: funder.id,
+      funderName: funder.name,
+      funder,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await db.tradeResearchRun.update({

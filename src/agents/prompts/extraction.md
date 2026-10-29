@@ -6,13 +6,13 @@ an informal note — read it for what it actually is, not what you expect it to 
 
 ## What to extract
 
-- **Parties**: every named legal entity playing a role in this deal (BORROWER, OBLIGOR, SUPPLIER,
-  INTERMEDIARY, GUARANTOR). For any party that appears to hold only a transport/trading/permit
-  right on a licensed resource (mining, agricultural concession, quota, etc.) rather than the
-  primary right itself, mark it `INTERMEDIARY` and fill `primaryRightHolderName` if the document
-  names the actual primary right-holder — this has mattered in every commodity deal processed by
-  this system so far (see the PT Kalmindo Energi Mandiri worked example, where the immediate coal
-  supplier held only a transport-and-sale permit and sourced from a separate mining-IUP holder).
+- **Parties**: every named legal entity playing an active role in this deal (`BORROWER`, `OBLIGOR`, `SUPPLIER`, `INTERMEDIARY`, `GUARANTOR`).
+  - **BORROWER**: The operating company seeking financing, borrowing funds, or discounting its receivables.
+  - **CRITICAL - LENDERS ARE NOT BORROWERS**: Never classify a lender, bank, credit fund, factor, or capital provider (such as Beech Fork Pte Ltd or any financing party in an existing credit agreement) as `BORROWER`. In lending or receivables agreements, the lender is the creditor providing capital, NOT the borrower. If a party in the document is a financier/lender, do NOT extract it as `BORROWER`. (If the lender is not an obligor, supplier, or guarantor, do not include it as a deal party).
+  - **OBLIGOR**: The customer / account debtor obligated to pay the invoices or commercial contract.
+  - **SUPPLIER**: The upstream supplier / vendor that the borrower purchases from.
+  - **INTERMEDIARY**: A permit-holder, trading entity, or broker sitting between a primary right-holder and the borrower — mark it `INTERMEDIARY` and fill `primaryRightHolderName` if the document names the actual primary right-holder.
+  - **GUARANTOR**: An entity providing a corporate or personal guarantee.
 - **Financing ask(s)**: identify which Financing Structure Type actually applies —
   `POST_SHIPMENT_RECEIVABLES_DISCOUNTING` (seller already delivered/invoiced, wants an advance
   against an existing receivable), `PRE_SHIPMENT_PROCUREMENT_FINANCE` (cash needed before
@@ -39,9 +39,9 @@ an informal note — read it for what it actually is, not what you expect it to 
 
 ## Hard rules
 
-- **Never guess a number you don't have grounds for.** If a document doesn't state a transit
-  time, a tenor, or an FX rate, leave it null and say so in `openQuestions` — do not estimate it
-  as if you had.
+- **Never guess, synthesize, or default any field.** If a document doesn't state a transit
+  time, a tenor, a jurisdiction, or an FX rate, leave it null and say so in `openQuestions` — do not estimate it
+  or use placeholder defaults (such as defaulting Delaware, Hong Kong, or assuming party roles) as if you had.
 - **Extract only from THIS document.** Merging across documents happens in a later step; your job
   here is faithful, literal extraction plus explicitly flagged uncertainty, not synthesis.
 - **Bilingual/multi-jurisdiction documents**: where a document states which language version

@@ -8,6 +8,9 @@ import type {
 import { getOpenRouterClient, EXTRACTION_MODEL, pdfParserPlugin } from "@/lib/openrouter";
 import { zodToResponseFormat, parseStructuredJson } from "@/lib/json-schema";
 import { DocumentExtractionSchema, STANDARD_DOCUMENT_TAXONOMY, type DocumentExtraction } from "@/dsl/schema";
+import { scanForPromptInjection, verifyVerbatimQuoteInText } from "@/lib/provenance-verifier";
+import { computePromptSha256, savePromptSnapshot } from "@/lib/prompt-cache";
+import type { LlmExecutionActor } from "@/dsl/provenance";
 
 const SYSTEM_PROMPT = readFileSync(
   join(process.cwd(), "src/agents/prompts/extraction.md"),
@@ -44,6 +47,7 @@ export async function extractFromDocument(
 ): Promise<DocumentExtraction> {
   const client = getOpenRouterClient();
   const isPdf = mimeType === "application/pdf";
+  const rawTextForVerification = isPdf ? null : fileBuffer.toString("utf-8");
 
   // The "file" content part is an OpenRouter-specific extension (not in
   // OpenAI's own content-part union), so the PDF branch is built as a
@@ -73,7 +77,7 @@ export async function extractFromDocument(
           role: "user",
           content:
             `Document filename: ${fileName}\n\nExtract this document per the system prompt. ` +
-            `Respond ONLY with a single valid JSON object matching the DocumentExtraction schema.\n\n${TAXONOMY_HINT}\n\n${fileBuffer.toString("utf-8")}`,
+            `Respond ONLY with a single valid JSON object matching the DocumentExtraction schema.\n\n${TAXONOMY_HINT}\n\n${rawTextForVerification}`,
         }
   ) as ChatCompletionMessageParam;
 
@@ -117,12 +121,76 @@ export async function extractFromDocument(
     };
 
     try {
+      const startTime = Date.now();
+      const promptSha256 = await computePromptSha256(SYSTEM_PROMPT, TAXONOMY_HINT);
+
+      // Save prompt snapshot deduplicated once
+      await savePromptSnapshot({
+        sha256: promptSha256,
+        templateId: "INVOICE_EXTRACTION_PROMPT_V1",
+        agentPersonaId: "makoto",
+        agentDisplayName: "Makoto (誠) — Invoice Credit Auditor",
+        systemPrompt: SYSTEM_PROMPT,
+        taxonomyOrSchemaHint: TAXONOMY_HINT,
+        modelSlug: model,
+        firstRecordedAt: new Date().toISOString(),
+      });
+
       const response: ChatCompletion = await client.chat.completions.create(params);
+      const latencyMs = Date.now() - startTime;
       const content = response.choices[0]?.message?.content;
       if (!content) {
         throw new Error(`Extraction agent returned no content for ${fileName}. Raw response: ${JSON.stringify(response)}`);
       }
-      return parseStructuredJson(content, DocumentExtractionSchema);
+      const parsed = parseStructuredJson(content, DocumentExtractionSchema);
+
+      // Attach LLM Actor telemetry to extraction
+      const llmActor: LlmExecutionActor = {
+        actorType: "LLM_AGENT",
+        agentPersonaId: "makoto",
+        agentDisplayName: "Makoto (誠) — Invoice Credit Auditor",
+        processStage: "SINGLE_DOC_EXTRACTION",
+        modelSlug: response.model || model,
+        ocrEngine: isPdf ? (pdfEngine || "mistral-ocr") : "native-text",
+        promptTemplateId: "INVOICE_EXTRACTION_PROMPT_V1",
+        promptSha256,
+        temperature: 0,
+        openRouterGenerationId: response.id || null,
+        promptTokens: response.usage?.prompt_tokens,
+        completionTokens: response.usage?.completion_tokens,
+        latencyMs,
+        processedAt: new Date().toISOString(),
+      };
+      (parsed as unknown as { _llmActor?: LlmExecutionActor })._llmActor = llmActor;
+
+      // Attach sourceFileName to all risk flags
+      parsed.riskFlags = (parsed.riskFlags ?? []).map((rf) => ({
+        ...rf,
+        sourceFileName: rf.sourceFileName || fileName,
+      }));
+
+      // Run deterministic prompt-injection scanner
+      const securityFlags = scanForPromptInjection(fileName, parsed, rawTextForVerification);
+      for (const sf of securityFlags) {
+        parsed.riskFlags.push(sf);
+      }
+
+      // Verify verbatim quotes when raw text is available locally
+      if (rawTextForVerification) {
+        for (const ask of parsed.financingAsks ?? []) {
+          if (ask.verbatimQuote && verifyVerbatimQuoteInText(ask.verbatimQuote, rawTextForVerification) === false) {
+            parsed.riskFlags.push({
+              category: "UNANCHORED_EXTRACTION",
+              severity: 4,
+              description: `Financing ask quote "${ask.verbatimQuote.slice(0, 80)}" could not be verified verbatim in "${fileName}".`,
+              sourceFileName: fileName,
+              evidenceSnippet: ask.verbatimQuote,
+            });
+          }
+        }
+      }
+
+      return parsed;
     } catch (err) {
       lastError = err;
       if (attemptIdx === attempts.length - 1) {

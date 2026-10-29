@@ -12,6 +12,7 @@ export const PartyProfileSchema = z.object({
   swiftBic: z.string().nullable().optional(),
   publicRating: z.string().nullable().optional(),
   sourceDocument: z.string().nullable().optional(),
+  taint: z.string().nullable().optional(),
   extractionTimestamp: z.string().nullable().optional(),
   modelUsed: z.string().nullable().optional(),
 });
@@ -19,16 +20,17 @@ export type PartyProfile = z.infer<typeof PartyProfileSchema>;
 
 export const TradeLegContractSchema = z.object({
   contractReference: z.string(),
-  incoterm: Incoterm2020,
-  port: z.string(),
-  paymentType: TradePaymentType,
-  tenorDays: z.number().int(),
-  contractAmountUsd: z.number(),
+  incoterm: Incoterm2020.nullable().optional(),
+  port: z.string().nullable().optional(),
+  paymentType: TradePaymentType.nullable().optional(),
+  tenorDays: z.number().int().default(0),
+  contractAmountUsd: z.number().default(0),
   laycanWindow: z.object({
     start: z.string().nullable().optional(),
     end: z.string().nullable().optional(),
   }).nullable().optional(),
   sourceDocument: z.string().nullable().optional(),
+  taint: z.string().nullable().optional(),
   extractionTimestamp: z.string().nullable().optional(),
   modelUsed: z.string().nullable().optional(),
 });
@@ -79,6 +81,8 @@ export const TradeDealSpecSchema = z.object({
     category: z.string(),
     severity: z.number().int().min(1).max(5),
     description: z.string(),
+    sourceFileName: z.string().nullable().optional(),
+    evidenceSnippet: z.string().nullable().optional(),
   })),
 
   readyForMatching: z.boolean(),

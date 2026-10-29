@@ -50,7 +50,7 @@ Read the document for what it actually is, not what you expect it to be.
 - `instrumentType`: `POST_MONEY_SAFE`, `PRE_MONEY_SAFE`, `CONVERTIBLE_NOTE`, `PRICED_PREFERRED_EQUITY`, `ACCELERATOR_STANDARD_TERMS`.
 - `valuationCapUsd`: Post-money or pre-money valuation cap if stated.
 - `discountPct`: Conversion discount percentage (e.g. 20%).
-- `plannedRunwayMonths`: Months of runway this raise will provide (default: 18).
+- `plannedRunwayMonths`: Months of runway this raise will provide if explicitly stated. Leave null if not mentioned.
 - `leadCommitted`: True if a lead investor has signed a term sheet or committed >50%.
 - `committedAmountUsd`: Capital already wired or circled in this round.
 
@@ -65,5 +65,5 @@ Read the document for what it actually is, not what you expect it to be.
 
 ## Hard Rules
 1. **Extract only from THIS document**: Cross-document reconciliation occurs in the next pass.
-2. **Never fabricate numbers**: If burn rate, valuation cap, or customer count is not stated in this file, leave it `null` and note it in `openQuestions`.
+2. **Never fabricate numbers or use defaults**: If burn rate, valuation cap, runway, jurisdiction, or customer count is not stated in this file, leave it `null` and note it in `openQuestions`. Never use placeholder defaults (like defaulting Delaware, 80% margin, or 18 months runway).
 3. **Audit provenance**: Record exact facts as presented in the file.

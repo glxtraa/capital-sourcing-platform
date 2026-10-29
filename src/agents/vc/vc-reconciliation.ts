@@ -7,43 +7,67 @@ import type {
   StartupStage,
   StartupSector,
 } from "@/dsl/vc";
+import { resolveDocumentTaint } from "@/dsl/provenance";
 
 export interface ReconciledStartupResult {
   startupDealSpec: StartupDealSpec | null;
   openQuestions: string[];
-  unresolvedRiskFlags: Array<{ category: string; severity: number; description: string }>;
+  unresolvedRiskFlags: Array<{
+    category: string;
+    severity: number;
+    description: string;
+    sourceFileName?: string | null;
+    evidenceSnippet?: string | null;
+  }>;
   readyForMatching: boolean;
 }
 
 /**
  * Deterministically merges and reconciles multi-document startup data room extractions.
  *
- * Checks:
- * 1. Data Room Reconciliation: Pitch Deck claims vs. Financial Model / Cap Table reality
- * 2. Cap Table Integrity: Dead equity check, option pool buffer, total ownership validation
- * 3. Runway & Burn Audit: Months of cash remaining, implied post-money valuation
- * 4. Technical / Team Balance: Identifies engineering leadership among founders
+ * Enforces Taint Tracking precedence: AUDITED_PROOF documents (financial models, cap tables,
+ * charters, term sheets, or any taxonomy code configured as AUDITED_PROOF in DocumentTaintPolicy)
+ * take priority over UNVERIFIED_CLAIM documents (pitch decks, one-pagers).
  */
 export function reconcileStartupExtractions(
   dealId: string,
   dealName: string,
-  extractions: StartupDocumentExtraction[],
+  extractions: Array<StartupDocumentExtraction & { _taintOverride?: string | null; _fileName?: string }>,
+  policyMap?: Record<string, "AUDITED_PROOF" | "UNVERIFIED_CLAIM">,
 ): ReconciledStartupResult {
   const openQuestions: string[] = [];
-  const riskFlags: Array<{ category: string; severity: number; description: string }> = [];
+  const riskFlags: Array<{
+    category: string;
+    severity: number;
+    description: string;
+    sourceFileName?: string | null;
+    evidenceSnippet?: string | null;
+  }> = [];
   const discrepancies: string[] = [];
 
-  for (const ext of extractions) {
+  const annotated = extractions.map((ext) => ({
+    ext,
+    taint: resolveDocumentTaint(ext.documentTypes, ext._taintOverride, policyMap),
+    fileName: ext._fileName || ext.riskFlags?.[0]?.sourceFileName || "Data Room Document",
+  }));
+
+  // Sort so AUDITED_PROOF documents come first when finding primary values
+  const sorted = [...annotated].sort((a, b) => {
+    const score = (t: string) => (t === "AUDITED_PROOF" || t === "HUMAN_VERIFIED" ? 0 : 1);
+    return score(a.taint) - score(b.taint);
+  });
+
+  for (const { ext } of sorted) {
     openQuestions.push(...ext.openQuestions);
     riskFlags.push(...ext.riskFlags);
   }
 
-  // 1. Identify primary company metadata
+  // 1. Identify primary company metadata (preferring AUDITED_PROOF)
   const companyName =
-    extractions.find((e) => Boolean(e.companyName))?.companyName ?? dealName;
+    sorted.find((e) => Boolean(e.ext.companyName))?.ext.companyName ?? dealName;
 
   const stageCounts = new Map<StartupStage, number>();
-  for (const ext of extractions) {
+  for (const { ext } of sorted) {
     if (ext.stage) {
       stageCounts.set(ext.stage, (stageCounts.get(ext.stage) ?? 0) + 1);
     }
@@ -58,7 +82,7 @@ export function reconcileStartupExtractions(
   }
 
   const verticalCounts = new Map<StartupSector, number>();
-  for (const ext of extractions) {
+  for (const { ext } of sorted) {
     if (ext.primaryVertical) {
       verticalCounts.set(ext.primaryVertical, (verticalCounts.get(ext.primaryVertical) ?? 0) + 1);
     }
@@ -73,12 +97,11 @@ export function reconcileStartupExtractions(
   }
 
   const legalJurisdiction =
-    extractions.find((e) => Boolean(e.legalEntityJurisdiction))?.legalEntityJurisdiction ??
-    "Delaware (US)";
+    sorted.find((e) => Boolean(e.ext.legalEntityJurisdiction))?.ext.legalEntityJurisdiction ?? null;
 
-  // 2. Aggregate and Deduplicate Founders
+  // 2. Aggregate and Deduplicate Founders (AUDITED_PROOF first so its equityOwnershipPct wins)
   const foundersMap = new Map<string, FounderExtraction>();
-  for (const ext of extractions) {
+  for (const { ext } of sorted) {
     for (const founder of ext.founders) {
       const key = founder.name.toLowerCase().trim();
       const existing = foundersMap.get(key);
@@ -100,26 +123,40 @@ export function reconcileStartupExtractions(
   }
   const founders = Array.from(foundersMap.values());
 
-  // 3. Reconcile Financials & Traction
-  const modelDoc = extractions.find((e) => e.documentTypes.includes("VC_FINANCIAL_MODEL"));
-  const deckDoc = extractions.find((e) => e.documentTypes.includes("VC_PITCH_DECK"));
+  // 3. Reconcile Financials & Traction using Taint Tracking (AUDITED_PROOF vs UNVERIFIED_CLAIM)
+  const proofTractionEntry =
+    sorted.find((e) => e.taint === "AUDITED_PROOF" && e.ext.traction?.arrUsd != null) ??
+    sorted.find((e) => e.ext.documentTypes.includes("VC_FINANCIAL_MODEL"));
+  const claimTractionEntry =
+    sorted.find((e) => e.taint === "UNVERIFIED_CLAIM" && e.ext.traction?.arrUsd != null) ??
+    sorted.find((e) => e.ext.documentTypes.includes("VC_PITCH_DECK"));
+
+  const modelDoc = proofTractionEntry?.ext;
+  const deckDoc = claimTractionEntry?.ext;
 
   const arrFromModel = modelDoc?.traction?.arrUsd ?? null;
   const arrFromDeck = deckDoc?.traction?.arrUsd ?? null;
 
-  if (arrFromModel != null && arrFromDeck != null && Math.abs(arrFromModel - arrFromDeck) > 50000) {
+  if (
+    arrFromModel != null &&
+    arrFromDeck != null &&
+    proofTractionEntry !== claimTractionEntry &&
+    Math.abs(arrFromModel - arrFromDeck) > 50000
+  ) {
     const diff = Math.abs(arrFromModel - arrFromDeck);
-    const disc = `ARR discrepancy between Pitch Deck ($${arrFromDeck.toLocaleString()}) and Financial Model ($${arrFromModel.toLocaleString()}) of $${diff.toLocaleString()}.`;
+    const disc = `Tainted Claim Conflict: Unverified Claim (${claimTractionEntry?.fileName || "Pitch Deck"}) states ARR $${arrFromDeck.toLocaleString()} vs Audited Proof (${proofTractionEntry?.fileName || "Financial Model"}) ARR $${arrFromModel.toLocaleString()} (delta $${diff.toLocaleString()}). Audited Proof value selected.`;
     discrepancies.push(disc);
     riskFlags.push({
-      category: "DATA_ROOM_METRICS_DISCREPANCY",
-      severity: 3,
+      category: "TAINTED_CLAIM_CONFLICT",
+      severity: 4,
       description: disc,
+      sourceFileName: claimTractionEntry?.fileName || null,
+      evidenceSnippet: `Claim (${claimTractionEntry?.fileName}): $${arrFromDeck.toLocaleString()} ARR vs Proof (${proofTractionEntry?.fileName}): $${arrFromModel.toLocaleString()} ARR`,
     });
   }
 
-  const resolvedArr = arrFromModel ?? arrFromDeck ?? extractions.find((e) => e.traction?.arrUsd != null)?.traction?.arrUsd ?? null;
-  const resolvedMrr = modelDoc?.traction?.mrrUsd ?? deckDoc?.traction?.mrrUsd ?? extractions.find((e) => e.traction?.mrrUsd != null)?.traction?.mrrUsd ?? null;
+  const resolvedArr = arrFromModel ?? arrFromDeck ?? sorted.find((e) => e.ext.traction?.arrUsd != null)?.ext.traction?.arrUsd ?? null;
+  const resolvedMrr = modelDoc?.traction?.mrrUsd ?? deckDoc?.traction?.mrrUsd ?? sorted.find((e) => e.ext.traction?.mrrUsd != null)?.ext.traction?.mrrUsd ?? null;
   const resolvedGrowth = modelDoc?.traction?.momGrowthRatePct ?? deckDoc?.traction?.momGrowthRatePct ?? null;
   const resolvedBurn = modelDoc?.traction?.netMonthlyBurnUsd ?? deckDoc?.traction?.netMonthlyBurnUsd ?? null;
   const resolvedRunway = modelDoc?.traction?.cashRunwayMonths ?? deckDoc?.traction?.cashRunwayMonths ?? null;
@@ -133,11 +170,13 @@ export function reconcileStartupExtractions(
     });
   }
 
-  // 4. Reconcile Cap Table
-  const capDoc = extractions.find((e) => e.documentTypes.includes("VC_CAP_TABLE"));
-  const foundersOwnership = capDoc?.capTable?.foundersOwnershipPct ?? extractions.find((e) => e.capTable?.foundersOwnershipPct != null)?.capTable?.foundersOwnershipPct ?? 80;
-  const investorOwnership = capDoc?.capTable?.investorOwnershipPct ?? extractions.find((e) => e.capTable?.investorOwnershipPct != null)?.capTable?.investorOwnershipPct ?? 10;
-  const optionPoolPct = capDoc?.capTable?.optionPoolPct ?? extractions.find((e) => e.capTable?.optionPoolPct != null)?.capTable?.optionPoolPct ?? 10;
+  // 4. Reconcile Cap Table (preferring AUDITED_PROOF)
+  const capDoc =
+    sorted.find((e) => e.taint === "AUDITED_PROOF" && e.ext.capTable?.foundersOwnershipPct != null)?.ext ??
+    extractions.find((e) => e.documentTypes.includes("VC_CAP_TABLE"));
+  const foundersOwnership = capDoc?.capTable?.foundersOwnershipPct ?? sorted.find((e) => e.ext.capTable?.foundersOwnershipPct != null)?.ext.capTable?.foundersOwnershipPct ?? null;
+  const investorOwnership = capDoc?.capTable?.investorOwnershipPct ?? sorted.find((e) => e.ext.capTable?.investorOwnershipPct != null)?.ext.capTable?.investorOwnershipPct ?? null;
+  const optionPoolPct = capDoc?.capTable?.optionPoolPct ?? sorted.find((e) => e.ext.capTable?.optionPoolPct != null)?.ext.capTable?.optionPoolPct ?? null;
   const safesOutstanding = capDoc?.capTable?.safesNotesOutstandingUsd ?? 0;
   const hasDeadEquity = extractions.some((e) => e.capTable?.hasDeadEquity);
 
@@ -149,7 +188,7 @@ export function reconcileStartupExtractions(
     });
   }
 
-  if (optionPoolPct < 10) {
+  if (optionPoolPct != null && optionPoolPct < 10) {
     riskFlags.push({
       category: "NON_STANDARD_GOVERNANCE_STRUCTURE",
       severity: 2,
@@ -202,17 +241,17 @@ export function reconcileStartupExtractions(
         id: `common-${commonHoldersMap.size + 1}`,
         holderName: f.name,
         roleOrRelationship: `${f.role || "Founder"} (Co-Founder)`,
-        shareCount: Math.round(((f.equityOwnershipPct || 0) / 100) * 10000000),
+        shareCount: null,
         ownershipPct: f.equityOwnershipPct || 0,
         vestingTerms: f.vestingConfirmed ? "4-year monthly with 1-year cliff" : "Unvested",
       });
     }
-    if (optionPoolPct > 0) {
+    if (optionPoolPct != null && optionPoolPct > 0) {
       commonHoldersMap.set("unallocated option pool", {
         id: `common-${commonHoldersMap.size + 1}`,
         holderName: "Unallocated Employee Stock Option Pool (ESOP)",
         roleOrRelationship: "Option Pool",
-        shareCount: Math.round((optionPoolPct / 100) * 10000000),
+        shareCount: null,
         ownershipPct: optionPoolPct,
         vestingTerms: "Reserved for future employee equity grants",
       });
@@ -227,12 +266,12 @@ export function reconcileStartupExtractions(
 
   // 5. Financing Ask & Valuation
   const askDoc = extractions.find((e) => e.financingAsk?.targetRaiseUsd != null);
-  const targetRaise = askDoc?.financingAsk?.targetRaiseUsd ?? 1500000;
-  const valuationCap = askDoc?.financingAsk?.valuationCapUsd ?? (primaryStage === "PRE_SEED" ? 6000000 : 12000000);
-  const instrument = askDoc?.financingAsk?.instrumentType ?? "POST_MONEY_SAFE";
+  const targetRaise = askDoc?.financingAsk?.targetRaiseUsd ?? null;
+  const valuationCap = askDoc?.financingAsk?.valuationCapUsd ?? null;
+  const instrument = askDoc?.financingAsk?.instrumentType ?? null;
 
   // Valuation Disconnect Check
-  if (primaryStage === "PRE_SEED" && valuationCap > 12000000 && (resolvedArr == null || resolvedArr < 100000)) {
+  if (primaryStage === "PRE_SEED" && valuationCap != null && valuationCap > 12000000 && (resolvedArr == null || resolvedArr < 100000)) {
     riskFlags.push({
       category: "VALUATION_TRACTION_DISCONNECT",
       severity: 3,
@@ -251,13 +290,17 @@ export function reconcileStartupExtractions(
   }
 
   // Dilution calculation
-  const impliedPostMoney = valuationCap;
-  const founderDilution = impliedPostMoney > 0 ? (targetRaise / impliedPostMoney) * 100 : 15;
-  const impliedRunwayExtension = resolvedBurn && resolvedBurn > 0 ? Math.round(targetRaise / resolvedBurn) : 18;
+  const impliedPostMoney = valuationCap ?? (targetRaise ? targetRaise * 5 : null);
+  const founderDilution = impliedPostMoney && impliedPostMoney > 0 && targetRaise != null ? (targetRaise / impliedPostMoney) * 100 : null;
+  const impliedRunwayExtension =
+    resolvedBurn && resolvedBurn > 0 && targetRaise != null
+      ? Math.round(targetRaise / resolvedBurn)
+      : (askDoc?.financingAsk?.plannedRunwayMonths ?? null);
 
   const hasCriticalRisk = riskFlags.some((r) => r.severity >= 5);
   const readyForMatching =
     Boolean(companyName) &&
+    targetRaise != null &&
     targetRaise > 0 &&
     founders.length > 0 &&
     !hasCriticalRisk;
@@ -265,7 +308,7 @@ export function reconcileStartupExtractions(
   // 6. Industry & Competitors Aggregation
   const resolvedIndustry =
     extractions.find((e) => Boolean(e.industry))?.industry ??
-    `${primaryVertical.replaceAll("_", " ")} Solutions`;
+    (primaryVertical ? primaryVertical.replaceAll("_", " ") : null);
 
   const subIndustriesSet = new Set<string>();
   for (const ext of extractions) {
@@ -301,11 +344,11 @@ export function reconcileStartupExtractions(
   const directCompetitors = competitors.filter((c) => c.overlapDegree === "DIRECT");
   const verifiedSourcesCount = competitors.filter((c) => c.sourceVerified).length;
 
-  // Reconcile Commercial Prospects across extractions
+  // 7. Commercial Prospects Aggregation
   const commercialMap = new Map<string, any>();
   for (const ext of extractions) {
-    if (Array.isArray((ext as any).commercialProspects)) {
-      for (const prospect of (ext as any).commercialProspects) {
+    if (Array.isArray(ext.commercialProspects)) {
+      for (const prospect of ext.commercialProspects) {
         const key = prospect.name.toLowerCase().trim();
         if (!commercialMap.has(key)) {
           commercialMap.set(key, prospect);
@@ -351,7 +394,7 @@ export function reconcileStartupExtractions(
       arrUsd: resolvedArr,
       mrrUsd: resolvedMrr,
       momGrowthRatePct: resolvedGrowth,
-      grossMarginPct: modelDoc?.traction?.grossMarginPct ?? 80,
+      grossMarginPct: modelDoc?.traction?.grossMarginPct ?? deckDoc?.traction?.grossMarginPct ?? null,
       netMonthlyBurnUsd: resolvedBurn,
       cashRunwayMonths: resolvedRunway,
       activeCustomersCount: deckDoc?.traction?.activeCustomersCount ?? null,
@@ -372,7 +415,7 @@ export function reconcileStartupExtractions(
       targetRaiseUsd: targetRaise,
       instrumentType: instrument,
       valuationCapUsd: valuationCap,
-      discountPct: askDoc?.financingAsk?.discountPct ?? 20,
+      discountPct: askDoc?.financingAsk?.discountPct ?? null,
       plannedRunwayMonths: impliedRunwayExtension,
       leadCommitted: askDoc?.financingAsk?.leadCommitted ?? false,
       committedAmountUsd: askDoc?.financingAsk?.committedAmountUsd ?? 0,
@@ -384,7 +427,7 @@ export function reconcileStartupExtractions(
       capTableReconciled: Boolean(capDoc),
       impliedRunwayExtensionMonths: impliedRunwayExtension,
       impliedPostMoneyValuationUsd: impliedPostMoney,
-      founderDilutionPct: Math.round(founderDilution * 10) / 10,
+      founderDilutionPct: founderDilution != null ? Math.round(founderDilution * 10) / 10 : null,
     },
 
     competitorAudit: {

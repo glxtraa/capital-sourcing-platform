@@ -41,9 +41,9 @@ For the target investor or query hint, discover and verify:
    - `typicalTurnaroundWeeks`: Typical time from first pitch to term sheet.
 
 8. **Contact Information & Key Personnel (Audited & Verified)**:
-   - `websiteUrl`: Official verified website for the fund (e.g. `https://www.phoenixcourt.vc`). Be extremely vigilant with TLDs — many European and global venture funds use `.vc`, `.fund`, `.capital`, or `.io` rather than `.com`. Every link will be verified live via HTTP; never synthesize or guess `.com` if the firm's genuine operating domain is `.vc`.
-   - `contactEmail`: Public pitch inbox, general contact email (e.g. `pitch@localglobe.vc`, `hello@...`), or partner contact point.
-   - `headquarters`: Office address, city, and country of their primary operations (e.g. "Phoenix Court, 2 Brill Place, London NW1 1DX, United Kingdom" or "Sand Hill Road, Menlo Park, CA").
+   - `websiteUrl`: Official verified website for the fund (e.g. `https://www.exampleventures.vc` or `https://www.firmname.com`). Be extremely vigilant with TLDs — many European and global venture funds use `.vc`, `.fund`, `.capital`, or `.io` rather than `.com`. Every link will be verified live via HTTP; never synthesize or guess `.com` if the firm's genuine operating domain is `.vc`.
+   - `contactEmail`: Public pitch inbox, general contact email (e.g. `pitch@firmname.vc`, `hello@firmname.com`), or partner contact point.
+   - `headquarters`: Official physical office address, city, and country of primary operations.
    - `keyContacts`: Key partners, investment directors, or sector leads (full name, exact role e.g. Founding Partner / General Partner, personal LinkedIn profile URL, X/Twitter profile, and email if published).
 
 9. **Portfolio Companies**:
@@ -58,3 +58,8 @@ For the target investor or query hint, discover and verify:
 - **Never fabricate ticket sizes or check ranges.** If not publicly disclosed, leave `null` and set `confidence` to `UNVERIFIED_NEEDS_CHECK`.
 - **Do not submit pitch forms.** Only read public application guidance and requirements.
 - **Never include specific client or deal details in the investor record.** The investor record is stored globally and matched against future startups.
+- **CRITICAL: NEVER CROSS-CONTAMINATE OR BORROW HEADQUARTERS ADDRESSES:**
+  - Every investor must have THEIR OWN genuine headquarters address sourced strictly from their specific search findings.
+  - NEVER copy, hallucinate, or borrow addresses between firms. For example, "Phoenix Court, 2 Brill Place, London" belongs EXCLUSIVELY to LocalGlobe / Phoenix Court and must NEVER be attached to Accel, Sequoia, or any other firm.
+  - If researching a firm with a London or international office (e.g. Accel London is 1 New Burlington Place, London W1S 2HR; Sequoia Europe is 1 St Vincent Street, London W1U 4DA), discover and record THEIR genuine verified office location.
+  - If no street-level address is explicitly found in search findings, output ONLY the verified City and Country (e.g. "London, United Kingdom" or "Palo Alto, CA, United States") or leave null if unknown. NEVER fabricate street addresses or borrow building names from examples.

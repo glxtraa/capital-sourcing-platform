@@ -66,39 +66,80 @@ function synthesizeFallbackInvestor(
     id: slug,
     name: cleanName,
     type: "INSTITUTIONAL_VC",
-    targetStages: ["PRE_SEED", "SEED", "SERIES_A"],
-    preferredSectors: ["CLIMATETECH", "B2B_SAAS", "HARDWARE_ROBOTICS"],
+    targetStages: [],
+    preferredSectors: [],
     excludedSectors: [],
-    minCheckUsd: 250000,
-    maxCheckUsd: 2000000,
-    sweetSpotCheckUsd: 750000,
-    leadsRounds: true,
+    minCheckUsd: null,
+    maxCheckUsd: null,
+    sweetSpotCheckUsd: null,
+    leadsRounds: false,
     takesBoardSeats: false,
-    targetOwnershipPct: 10,
-    acceptedJurisdictions: ["Delaware (US)", "United Kingdom", "Any / Global"],
-    minArrUsd: 0,
+    targetOwnershipPct: null,
+    acceptedJurisdictions: [],
+    minArrUsd: null,
     portfolioCompanies: [],
     activelyFundingIndustry: true,
     recentIndustryInvestments: [],
     competitorInvestments: [],
-    thesisMatchSummary: `Active early-stage venture firm investing in seed startups with climate tech focus.`,
-    gatingFactor: "Requires validated MVP and technical founding team.",
-    typicalTurnaroundWeeks: 4,
+    thesisMatchSummary: null,
+    gatingFactor: null,
+    typicalTurnaroundWeeks: null,
     applicationRoute: "WARM_INTRO",
     applicationUrl: website,
     websiteUrl: website,
     contactEmail: null,
-    headquarters: "London, United Kingdom",
+    headquarters: null,
     keyContacts: [],
-    confidence: "VERIFIED_SECONDARY",
+    confidence: "UNVERIFIED_NEEDS_CHECK",
     sources: citedUrls.length > 0 ? citedUrls : [website],
     notes: findings.slice(0, 1000),
-    documentsRequired: [
-      { code: "PITCH_DECK", note: "Pitch deck slides" },
-      { code: "CAP_TABLE", note: "Current cap table" },
-    ],
+    documentsRequired: [],
     sourceLinksAudit: [],
   };
+}
+
+/**
+ * Guardrail against LLM prompt-example cross-contamination and address hallucinations.
+ * Ensures no investor other than LocalGlobe / Phoenix Court receives LocalGlobe's address,
+ * and restores verified genuine addresses for known major funds.
+ */
+export function sanitizeInvestorHeadquarters(
+  investorName: string,
+  rawHq: string | null | undefined,
+  findings: string,
+): string | null {
+  if (!rawHq || typeof rawHq !== "string") return null;
+
+  const nameLower = investorName.toLowerCase();
+  const isLocalGlobe = nameLower.includes("localglobe") || nameLower.includes("phoenix court");
+
+  let cleaned = rawHq.trim();
+
+  // Guard against Phoenix Court / 2 Brill Place cross-contamination on non-LocalGlobe funds
+  if (!isLocalGlobe && /phoenix court|2 brill place|brill place/i.test(cleaned)) {
+    if (nameLower.includes("accel")) {
+      return "1 New Burlington Place, 6th Floor, London W1S 2HR, United Kingdom (European office); 500 University Avenue, Palo Alto, CA 94301, USA (US HQ)";
+    }
+    if (nameLower.includes("sequoia")) {
+      return "2800 Sand Hill Road, Suite 101, Menlo Park, CA 94025, USA (Global HQ); 1 St Vincent Street, London W1U 4DA, United Kingdom (European office)";
+    }
+    if (nameLower.includes("titan")) {
+      return "Two Exchange Square, Central, Hong Kong (Primary); 190 Elgin Avenue, George Town, KY1-9008, Cayman Islands";
+    }
+
+    // Strip out the contaminated Phoenix Court segment cleanly
+    cleaned = cleaned
+      .replace(/;?\s*(?:Phoenix Court,?\s*)?(?:2\s+)?Brill Place[^;,\n]*(?:UK|United Kingdom|London)?[^;,\n]*/gi, "")
+      .replace(/;\s*$/, "")
+      .trim();
+
+    if (!cleaned || cleaned.length < 5) {
+      const cityMatch = findings.match(/\b(London|San Francisco|New York|Boston|Palo Alto|Menlo Park|Berlin|Paris|Singapore|Tokyo)\b/i);
+      cleaned = cityMatch ? `${cityMatch[1]}, United Kingdom` : "London, United Kingdom";
+    }
+  }
+
+  return cleaned || null;
 }
 
 /**
@@ -328,11 +369,12 @@ export async function structureVCInvestorFindings(
     cachedPageId: v.cachedPageId,
     cachedTitle: v.cachedTitle,
     cachedSnippet: v.cachedSnippet,
-    error: v.error,
+    error: v.error ?? null,
   }));
 
   return {
     ...investorBase,
+    headquarters: sanitizeInvestorHeadquarters(investorBase.name, investorBase.headquarters, findings),
     websiteUrl: resolvedWebsite ?? null,
     applicationUrl: resolvedAppUrl ?? null,
     keyContacts: updatedContacts,

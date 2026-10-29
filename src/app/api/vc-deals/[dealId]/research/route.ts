@@ -8,7 +8,49 @@ import {
 import { matchStartupDeal } from "@/lib/vc-matching";
 import { reconcileStartupExtractions } from "@/agents/vc/vc-reconciliation";
 import { researchStartupCompetitors } from "@/agents/vc/vc-competitor-agent";
-import type { StartupDocumentExtraction } from "@/dsl/vc";
+import type { StartupDocumentExtraction, StartupInvestorDTO } from "@/dsl/vc";
+
+function cleanJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value, (_, v) => (v === undefined ? null : v)));
+}
+
+function sanitizeInvestorData(investor: StartupInvestorDTO) {
+  return {
+    id: investor.id,
+    name: investor.name,
+    type: investor.type,
+    targetStages: investor.targetStages ?? [],
+    preferredSectors: investor.preferredSectors ?? [],
+    excludedSectors: investor.excludedSectors ?? [],
+    minCheckUsd: investor.minCheckUsd ?? null,
+    maxCheckUsd: investor.maxCheckUsd ?? null,
+    sweetSpotCheckUsd: investor.sweetSpotCheckUsd ?? null,
+    leadsRounds: Boolean(investor.leadsRounds),
+    takesBoardSeats: Boolean(investor.takesBoardSeats),
+    targetOwnershipPct: investor.targetOwnershipPct ?? null,
+    acceptedJurisdictions: investor.acceptedJurisdictions ?? [],
+    minArrUsd: investor.minArrUsd ?? null,
+    portfolioCompanies: investor.portfolioCompanies ?? [],
+    activelyFundingIndustry: Boolean(investor.activelyFundingIndustry),
+    recentIndustryInvestments: cleanJson(investor.recentIndustryInvestments ?? []),
+    competitorInvestments: cleanJson(investor.competitorInvestments ?? []),
+    thesisMatchSummary: investor.thesisMatchSummary ?? null,
+    sourceLinksAudit: cleanJson(investor.sourceLinksAudit ?? []),
+    criteriaProvenance: cleanJson(investor.criteriaProvenance ?? []),
+    gatingFactor: investor.gatingFactor ?? null,
+    typicalTurnaroundWeeks: investor.typicalTurnaroundWeeks ?? null,
+    applicationRoute: investor.applicationRoute ?? "WARM_INTRO",
+    applicationUrl: investor.applicationUrl ?? null,
+    confidence: investor.confidence ?? "VERIFIED_SECONDARY",
+    sources: investor.sources ?? [],
+    notes: investor.notes ?? null,
+    contactEmail: investor.contactEmail ?? null,
+    headquarters: investor.headquarters ?? null,
+    websiteUrl: investor.websiteUrl ?? null,
+    keyContactsJson: cleanJson(investor.keyContacts ?? []),
+    lastVerified: new Date(),
+  };
+}
 
 export const maxDuration = 300;
 
@@ -70,7 +112,7 @@ export async function POST(
         primaryVertical: deal.primaryVertical,
         industryHint: deal.industry || undefined,
         descriptionOrDeckSummary: deal.documents.map((d) => d.fileName).join(", "),
-        jurisdiction: deal.legalEntityJurisdiction,
+        jurisdiction: deal.legalEntityJurisdiction || undefined,
       });
       resolvedIndustry = compResult.industry;
       resolvedSubIndustries = compResult.subIndustries;
@@ -105,12 +147,13 @@ export async function POST(
   }
 
   const ask = deal.financingAsks[0];
-  const targetRaise = ask?.targetRaiseUsd ?? 1500000;
+  const targetRaise = ask?.targetRaiseUsd ?? null;
   const location = deal.legalEntityJurisdiction || "Global";
+  const raiseDescription = targetRaise ? `seeking ~$${targetRaise.toLocaleString()}` : "seeking capital";
+  const instrumentDescription = ask?.instrumentType ? `on a ${ask.instrumentType}` : "funding round";
   const defaultHint =
     `A venture capital fund, angel syndicate, or accelerator for a ${deal.stage} stage ` +
-    `${deal.primaryVertical} startup located in ${location} seeking ~$${targetRaise.toLocaleString()} ` +
-    `on a ${ask?.instrumentType ?? "POST_MONEY_SAFE"}`;
+    `${deal.primaryVertical} startup located in ${location} ${raiseDescription} ${instrumentDescription}`;
 
   const competitorNames = competitors.map((c) => c.name);
   const compContext = competitorNames.length > 0
@@ -167,28 +210,25 @@ export async function POST(
         citedUrls: body.citedUrls,
       });
 
-      const { documentsRequired, keyContacts, ...investorData } = investor;
+      const sanitized = sanitizeInvestorData(investor);
+      const docsReq = Array.isArray(investor.documentsRequired) ? investor.documentsRequired : [];
 
       await db.startupInvestor.upsert({
         where: { id: investor.id },
         create: {
-          ...investorData,
-          keyContactsJson: keyContacts ?? [],
-          lastVerified: new Date(),
+          ...sanitized,
           documentsRequired: {
-            create: documentsRequired.map((doc) => ({
+            create: docsReq.map((doc) => ({
               code: doc.code,
               note: doc.note ?? null,
             })),
           },
         },
         update: {
-          ...investorData,
-          keyContactsJson: keyContacts ?? [],
-          lastVerified: new Date(),
+          ...sanitized,
           documentsRequired: {
             deleteMany: {},
-            create: documentsRequired.map((doc) => ({
+            create: docsReq.map((doc) => ({
               code: doc.code,
               note: doc.note ?? null,
             })),
@@ -246,28 +286,25 @@ export async function POST(
 
     // 2. Structure
     const investor = await structureVCInvestorFindings(hint, { findings, citedUrls });
-    const { documentsRequired, keyContacts, ...investorData } = investor;
+    const sanitized = sanitizeInvestorData(investor);
+    const docsReq = Array.isArray(investor.documentsRequired) ? investor.documentsRequired : [];
 
     await db.startupInvestor.upsert({
       where: { id: investor.id },
       create: {
-        ...investorData,
-        keyContactsJson: keyContacts ?? [],
-        lastVerified: new Date(),
+        ...sanitized,
         documentsRequired: {
-          create: documentsRequired.map((doc) => ({
+          create: docsReq.map((doc) => ({
             code: doc.code,
             note: doc.note ?? null,
           })),
         },
       },
       update: {
-        ...investorData,
-        keyContactsJson: keyContacts ?? [],
-        lastVerified: new Date(),
+        ...sanitized,
         documentsRequired: {
           deleteMany: {},
-          create: documentsRequired.map((doc) => ({
+          create: docsReq.map((doc) => ({
             code: doc.code,
             note: doc.note ?? null,
           })),

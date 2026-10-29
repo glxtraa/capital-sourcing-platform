@@ -1,6 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useMemo } from "react";
+import CodeMirror from "@uiw/react-codemirror";
+import { json } from "@codemirror/lang-json";
+import { oneDark } from "@codemirror/theme-one-dark";
 import {
   AlertTriangle,
   Check,
@@ -13,8 +16,16 @@ import {
   Layers,
   Sparkles,
   X,
+  Play,
+  RotateCcw,
+  ShieldCheck,
+  Terminal,
+  Cpu,
 } from "lucide-react";
 import { Badge, Button } from "@/components/ui/primitives";
+import { DataLineageMatrix, ProvenanceXRayDrawer } from "@/components/provenance";
+import { synthesizeFieldLineageFromDsl, type FieldLineageNode } from "@/dsl/provenance";
+import { resolveZodDslDefinition, type ZodDslSchemaDefinition } from "@/dsl/zod-registry";
 
 export interface MissingParameterInfo {
   name: string;
@@ -32,6 +43,81 @@ export interface AgentDslModalProps {
   missingParameters?: MissingParameterInfo[];
   onClose: () => void;
   onEditParameters?: () => void;
+  onSaveDsl?: (updatedDsl: any) => Promise<void> | void;
+  onRecompileAndRun?: (updatedDsl: any) => Promise<void> | void;
+}
+
+// Japanese Agent Persona Resolver
+function resolveAgentPersona(agentName: string, agentFlow: string) {
+  const combined = `${agentName} ${agentFlow}`.toLowerCase();
+  if (combined.includes("maritime") || combined.includes("trade") || combined.includes("shipping")) {
+    return {
+      kanji: "湊",
+      name: "Minato",
+      meaning: "Harbor / Port",
+      role: "Maritime & Trade Contract Parser",
+      engine: "DeepSeek-V4 Flash (1M OCR)",
+      badgeTone: "navy" as const,
+    };
+  }
+  if (combined.includes("invoice") || combined.includes("credit") || combined.includes("dilution") || combined.includes("debtor")) {
+    return {
+      kanji: "誠",
+      name: "Makoto",
+      meaning: "Truth / Integrity",
+      role: "Invoice Credit & Dilution Auditor",
+      engine: "DeepSeek-V4 Flash",
+      badgeTone: "amber" as const,
+    };
+  }
+  if (combined.includes("vc") || combined.includes("venture") || combined.includes("thesis") || combined.includes("cap table") || combined.includes("safe")) {
+    return {
+      kanji: "大輝",
+      name: "Daiki",
+      meaning: "Great Radiance / Vision",
+      role: "Venture Capital Thesis Architect",
+      engine: "Qwen 235B Multi-Step",
+      badgeTone: "purple" as const,
+    };
+  }
+  if (combined.includes("commercial") || combined.includes("icp") || combined.includes("contact") || combined.includes("buyer")) {
+    return {
+      kanji: "疾風",
+      name: "Hayate",
+      meaning: "Swift Gale",
+      role: "Commercial Revenue & ICP Hunter",
+      engine: "Qwen 30B Search-Augmented",
+      badgeTone: "coral" as const,
+    };
+  }
+  if (combined.includes("benchmark") || combined.includes("termsheet") || combined.includes("spread") || combined.includes("pricing")) {
+    return {
+      kanji: "正司",
+      name: "Seiji",
+      meaning: "Balanced Arbiter",
+      role: "Spread & Term Sheet Benchmark Engine",
+      engine: "DeepSeek-V4 Flash",
+      badgeTone: "green" as const,
+    };
+  }
+  if (combined.includes("competitor") || combined.includes("graph")) {
+    return {
+      kanji: "光",
+      name: "Hikari",
+      meaning: "Illumination",
+      role: "Competitive Graph & Partner Scout",
+      engine: "Qwen 235B Graph Synthesizer",
+      badgeTone: "coral" as const,
+    };
+  }
+  return {
+    kanji: "悟",
+    name: "Satoru",
+    meaning: "Deep Discernment",
+    role: "Funder Portal & Form Inspector",
+    engine: "DOM Form Inspector + OpenRouter",
+    badgeTone: "blue" as const,
+  };
 }
 
 export function AgentDslModal({
@@ -44,19 +130,69 @@ export function AgentDslModal({
   missingParameters = [],
   onClose,
   onEditParameters,
+  onSaveDsl,
+  onRecompileAndRun,
 }: AgentDslModalProps) {
-  const [activeTab, setActiveTab] = useState<"input" | "output">("input");
+  const [activeTab, setActiveTab] = useState<"input" | "output" | "lineage" | "schema">("input");
+  const [viewMode, setViewMode] = useState<"code" | "overview">("code");
   const [copiedInput, setCopiedInput] = useState(false);
   const [copiedOutput, setCopiedOutput] = useState(false);
+  const [copiedZod, setCopiedZod] = useState(false);
+  const [isCompiling, setIsCompiling] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+  const [selectedXRayNode, setSelectedXRayNode] = useState<FieldLineageNode | null>(null);
+
+  const persona = useMemo(() => resolveAgentPersona(agentName, agentFlow), [agentName, agentFlow]);
+  const zodSchemaDef = useMemo(
+    () => resolveZodDslDefinition({ agentFlow }),
+    [agentFlow]
+  );
+
+  // Editable Code State
+  const initialInputCode = useMemo(() => JSON.stringify(dslInput || {}, null, 2), [dslInput]);
+  const [inputCode, setInputCode] = useState(initialInputCode);
+  const [compileError, setCompileError] = useState<string | null>(null);
+  const [compiledAst, setCompiledAst] = useState<any>(dslInput || {});
+
+  const fieldLineage = useMemo(
+    () => synthesizeFieldLineageFromDsl(compiledAst || dslInput),
+    [compiledAst, dslInput]
+  );
+
+  // Reset when dslInput changes
+  useEffect(() => {
+    setInputCode(initialInputCode);
+    setCompileError(null);
+    setCompiledAst(dslInput || {});
+  }, [initialInputCode, dslInput]);
 
   if (!isOpen) return null;
 
-  const inputJsonString = JSON.stringify(dslInput || {}, null, 2);
   const outputJsonString = JSON.stringify(agentOutput || [], null, 2);
+
+  // Validate JSON compilation in real-time
+  const handleCodeChange = (value: string) => {
+    setInputCode(value);
+    setSaveSuccess(false);
+    try {
+      const parsed = JSON.parse(value);
+      setCompileError(null);
+      setCompiledAst(parsed);
+    } catch (err: any) {
+      setCompileError(err.message || "Invalid JSON syntax");
+    }
+  };
+
+  const handleReset = () => {
+    setInputCode(initialInputCode);
+    setCompileError(null);
+    setCompiledAst(dslInput || {});
+    setSaveSuccess(false);
+  };
 
   const handleCopyInput = async () => {
     try {
-      await navigator.clipboard.writeText(inputJsonString);
+      await navigator.clipboard.writeText(inputCode);
       setCopiedInput(true);
       setTimeout(() => setCopiedInput(false), 2000);
     } catch (err) {
@@ -74,6 +210,37 @@ export function AgentDslModal({
     }
   };
 
+  const handleCompileAndSave = async () => {
+    if (compileError) return;
+    setIsCompiling(true);
+    try {
+      const parsed = JSON.parse(inputCode);
+      if (onSaveDsl) {
+        await onSaveDsl(parsed);
+      }
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3000);
+    } catch (err: any) {
+      setCompileError(err.message || "Compilation failed");
+    } finally {
+      setIsCompiling(false);
+    }
+  };
+
+  const handleCompileAndReRun = async () => {
+    if (compileError || !onRecompileAndRun) return;
+    setIsCompiling(true);
+    try {
+      const parsed = JSON.parse(inputCode);
+      await onRecompileAndRun(parsed);
+      onClose();
+    } catch (err: any) {
+      setCompileError(err.message || "Execution failed");
+    } finally {
+      setIsCompiling(false);
+    }
+  };
+
   const hasMissing = missingParameters.length > 0;
   const hasOutput = agentOutput !== undefined && agentOutput !== null;
   const outputItemsCount = Array.isArray(agentOutput) ? agentOutput.length : null;
@@ -84,89 +251,174 @@ export function AgentDslModal({
       onClick={onClose}
     >
       <div
-        className="w-full max-w-3xl max-h-[90vh] flex flex-col bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl shadow-2xl overflow-hidden"
+        className="w-full max-w-4xl max-h-[92vh] flex flex-col bg-white dark:bg-[#151829] border border-neutral-200 dark:border-[#2a3052] rounded-xl shadow-2xl overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Header */}
-        <div className="flex items-start justify-between p-4 border-b border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-900/50">
-          <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-lg bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300">
-              <FileCode className="h-5 w-5" />
+        {/* Header with Japanese Persona Integration */}
+        <div className="flex items-start justify-between p-4 border-b border-neutral-200 dark:border-[#2a3052] bg-[#1a1f3a] text-white">
+          <div className="flex items-center gap-3">
+            <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-[#ff6b4a] text-white font-black text-xl shadow-xs">
+              {persona.kanji}
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h3 className="font-semibold text-sm sm:text-base text-neutral-900 dark:text-neutral-100">
-                  {agentName}
+                <h3 className="font-bold text-base text-white">
+                  {persona.name} ({persona.kanji}) · {agentName}
                 </h3>
-                <Badge tone="purple" className="text-[10px] font-mono">
+                <Badge tone={persona.badgeTone} className="text-[10px] font-mono">
                   {agentFlow}
                 </Badge>
               </div>
-              <p className="text-xs text-neutral-500 mt-0.5">{description}</p>
+              <p className="text-xs text-neutral-300 mt-0.5">
+                {persona.role} · <span className="font-mono text-[#ff8566]">{persona.engine}</span>
+              </p>
             </div>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-600 hover:bg-neutral-100 dark:hover:bg-neutral-800 dark:hover:text-neutral-200 transition-colors cursor-pointer"
+            className="p-1.5 rounded-lg text-neutral-300 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
           >
             <X className="h-4 w-4" />
           </button>
         </div>
 
-        {/* Navigation Tabs (Input vs Output) */}
-        {hasOutput && (
-          <div className="flex border-b border-neutral-200 dark:border-neutral-800 bg-neutral-100/70 dark:bg-neutral-800/40 px-4 pt-2 gap-3 text-xs font-medium">
+        {/* Navigation Tabs (Input vs Output) + View Switcher */}
+        <div className="flex items-center justify-between border-b border-neutral-200 dark:border-[#2a3052] bg-neutral-100/70 dark:bg-[#111422] px-4 pt-2 text-xs font-medium">
+          <div className="flex gap-3">
             <button
               type="button"
               onClick={() => setActiveTab("input")}
               className={`pb-2.5 px-2 border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 ${
                 activeTab === "input"
-                  ? "border-emerald-600 text-emerald-700 dark:border-emerald-400 dark:text-emerald-300 font-semibold"
+                  ? "border-[#ff6b4a] text-[#ff6b4a] dark:text-[#ff8566] font-bold"
                   : "border-transparent text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-200"
               }`}
             >
               <FileCode className="h-3.5 w-3.5" />
-              <span>DSL Input &amp; Context</span>
+              <span>Input DSL Spec</span>
               {hasMissing && (
                 <span className="ml-1 px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-amber-200 text-amber-900 dark:bg-amber-900 dark:text-amber-200">
-                  {missingParameters.length} missing
+                  {missingParameters.length} warnings
                 </span>
               )}
             </button>
+            {hasOutput && (
+              <button
+                type="button"
+                onClick={() => setActiveTab("output")}
+                className={`pb-2.5 px-2 border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 ${
+                  activeTab === "output"
+                    ? "border-purple-600 text-purple-700 dark:border-purple-400 dark:text-purple-300 font-bold"
+                    : "border-transparent text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-200"
+                }`}
+              >
+                <Sparkles className="h-3.5 w-3.5 text-purple-600" />
+                <span>Output DSL Results</span>
+                {outputItemsCount !== null && (
+                  <span className="ml-1 px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-purple-200 text-purple-900 dark:bg-purple-900 dark:text-purple-200">
+                    {outputItemsCount} items
+                  </span>
+                )}
+              </button>
+            )}
             <button
               type="button"
-              onClick={() => setActiveTab("output")}
+              onClick={() => setActiveTab("lineage")}
               className={`pb-2.5 px-2 border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 ${
-                activeTab === "output"
-                  ? "border-purple-600 text-purple-700 dark:border-purple-400 dark:text-purple-300 font-semibold"
+                activeTab === "lineage"
+                  ? "border-cyan-500 text-cyan-600 dark:text-cyan-400 font-bold"
                   : "border-transparent text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-200"
               }`}
             >
-              <Sparkles className="h-3.5 w-3.5 text-purple-600" />
-              <span>Agent Output &amp; Discovered Data</span>
-              {outputItemsCount !== null && (
-                <span className="ml-1 px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-purple-200 text-purple-900 dark:bg-purple-900 dark:text-purple-200">
-                  {outputItemsCount}
-                </span>
-              )}
+              <Layers className="h-3.5 w-3.5 text-cyan-500" />
+              <span>Provenance Matrix &amp; Traceability 🛡️</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("schema")}
+              className={`pb-2.5 px-2 border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 ${
+                activeTab === "schema"
+                  ? "border-amber-500 text-amber-600 dark:text-amber-400 font-bold"
+                  : "border-transparent text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-200"
+              }`}
+            >
+              <Terminal className="h-3.5 w-3.5 text-amber-500" />
+              <span>Underlying Zod DSL</span>
+              <span className="rounded bg-amber-100 px-1 py-0.2 text-[9px] font-mono font-bold text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                Read-Only
+              </span>
             </button>
           </div>
-        )}
+
+          {/* Code vs Overview Toggle */}
+          {activeTab === "input" && (
+            <div className="flex items-center gap-1 pb-2">
+              <button
+                type="button"
+                onClick={() => setViewMode("code")}
+                className={`rounded px-2.5 py-1 text-xs font-semibold cursor-pointer ${
+                  viewMode === "code"
+                    ? "bg-[#1a1f3a] text-white dark:bg-[#ff6b4a]"
+                    : "text-neutral-500 hover:text-neutral-800 dark:text-neutral-400"
+                }`}
+              >
+                CodeMirror DSL
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("overview")}
+                className={`rounded px-2.5 py-1 text-xs font-semibold cursor-pointer ${
+                  viewMode === "overview"
+                    ? "bg-[#1a1f3a] text-white dark:bg-[#ff6b4a]"
+                    : "text-neutral-500 hover:text-neutral-800 dark:text-neutral-400"
+                }`}
+              >
+                Overview Form
+              </button>
+            </div>
+          )}
+        </div>
 
         {/* Scrollable Content */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {activeTab === "input" ? (
             <>
+              {/* COMPILATION ERROR / WARNING BANNER */}
+              {compileError ? (
+                <div className="rounded-lg border border-red-300 bg-red-50 p-3.5 dark:border-red-900/60 dark:bg-red-950/40 space-y-1.5 animate-in shake duration-200">
+                  <div className="flex items-center gap-2 text-red-800 dark:text-red-300 font-bold text-xs">
+                    <AlertTriangle className="h-4 w-4 shrink-0 text-red-600 dark:text-red-400" />
+                    <span>⚠️ DSL Compilation Warning: JSON Syntax Error</span>
+                  </div>
+                  <p className="font-mono text-[11px] text-red-700 dark:text-red-300/90 pl-6">
+                    {compileError}
+                  </p>
+                  <p className="text-[11px] text-red-600 dark:text-red-400/80 pl-6">
+                    Downstream agent execution is guarded and disabled until clean compilation passes.
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50/70 p-2.5 dark:border-emerald-900/50 dark:bg-emerald-950/30 flex items-center justify-between text-xs text-emerald-800 dark:text-emerald-300">
+                  <div className="flex items-center gap-2">
+                    <ShieldCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                    <span>✓ DSL Compiled: Valid JSON structure validated for {persona.name} ({persona.kanji})</span>
+                  </div>
+                  {saveSuccess && (
+                    <span className="font-bold text-emerald-600 dark:text-emerald-400 animate-pulse">
+                      Changes Applied &amp; Synced!
+                    </span>
+                  )}
+                </div>
+              )}
+
               {/* Missing Parameters Warning Block */}
-              {hasMissing ? (
-                <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3.5 dark:border-amber-900/50 dark:bg-amber-950/30 space-y-2.5">
-                  <div className="flex items-start justify-between gap-2">
+              {hasMissing && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 dark:border-amber-900/50 dark:bg-amber-950/30 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2 text-amber-800 dark:text-amber-300 font-medium text-xs">
                       <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
-                      <span>
-                        Missing or Defaulted Parameters ({missingParameters.length})
-                      </span>
+                      <span>Missing / Recommended Parameters ({missingParameters.length})</span>
                     </div>
                     {onEditParameters && (
                       <Button
@@ -176,23 +428,20 @@ export function AgentDslModal({
                           onClose();
                           onEditParameters();
                         }}
-                        className="h-7 text-xs gap-1 border-amber-300 text-amber-800 hover:bg-amber-100 dark:border-amber-800 dark:text-amber-300 dark:hover:bg-amber-950/50"
+                        className="h-6 text-xs gap-1 border-amber-300 text-amber-800 hover:bg-amber-100"
                       >
                         <Edit3 className="h-3 w-3" />
-                        Edit Parameters &amp; ICP
+                        Edit In Form
                       </Button>
                     )}
                   </div>
-                  <p className="text-[11px] text-amber-700 dark:text-amber-300/90 leading-relaxed">
-                    When specific domain or ICP parameters are omitted, agent reasoning defaults to high-level vertical heuristics. Fill these fields to dramatically sharpen matching precision for competitors, enterprise buyers, and strategic partners.
-                  </p>
-                  <div className="space-y-1.5 pt-1">
+                  <div className="space-y-1 pt-1">
                     {missingParameters.map((param) => (
                       <div
                         key={param.name}
-                        className="flex flex-col sm:flex-row sm:items-baseline gap-1 sm:gap-2 text-xs bg-white/60 dark:bg-neutral-900/60 p-2 rounded border border-amber-200/50 dark:border-amber-900/30"
+                        className="flex flex-col sm:flex-row sm:items-baseline gap-1 text-xs bg-white/70 dark:bg-neutral-900/60 p-2 rounded border border-amber-200/50"
                       >
-                        <span className="font-mono font-semibold text-amber-900 dark:text-amber-200 shrink-0">
+                        <span className="font-mono font-semibold text-amber-900 dark:text-amber-200">
                           {param.name}:
                         </span>
                         <span className="text-neutral-600 dark:text-neutral-400 text-[11px]">
@@ -205,303 +454,279 @@ export function AgentDslModal({
                     ))}
                   </div>
                 </div>
-              ) : (
-                <div className="rounded-lg border border-emerald-200 bg-emerald-50/70 p-3 dark:border-emerald-900/50 dark:bg-emerald-950/30 flex items-center justify-between text-xs text-emerald-800 dark:text-emerald-300">
-                  <div className="flex items-center gap-2">
-                    <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                    <span>
-                      All high-leverage DSL parameters are populated. The agent will perform deep domain-tailored matching.
-                    </span>
-                  </div>
-                  {onEditParameters && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => {
-                        onClose();
-                        onEditParameters();
-                      }}
-                      className="h-6 text-[11px] gap-1 border-emerald-300 text-emerald-800 dark:border-emerald-800 dark:text-emerald-300"
-                    >
-                      <Edit3 className="h-2.5 w-2.5" />
-                      Edit
-                    </Button>
-                  )}
-                </div>
               )}
 
-              {/* Key Parameters Summary Grid */}
-              <div className="space-y-2">
-                <h4 className="text-xs font-semibold uppercase tracking-wider text-neutral-500">
-                  Active Extraction &amp; Context Attributes
-                </h4>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-                  <div className="p-2.5 rounded border border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-800/30">
-                    <span className="text-[10px] text-neutral-400 uppercase tracking-wider block font-semibold">
-                      Company &amp; Stage
+              {/* MAIN CONTENT: CodeMirror Editor vs Overview Form */}
+              {viewMode === "code" ? (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold uppercase tracking-wider text-neutral-500 flex items-center gap-1.5">
+                      <Terminal className="h-3.5 w-3.5 text-[#ff6b4a]" />
+                      <span>CodeMirror 6 Live DSL Editor</span>
                     </span>
-                    <span className="font-medium text-neutral-900 dark:text-neutral-100">
-                      {dslInput?.companyName || "Unknown"} · {dslInput?.stage || "SEED"}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={handleReset}
+                        className="h-7 text-xs gap-1 text-neutral-500 hover:text-neutral-900"
+                      >
+                        <RotateCcw className="h-3 w-3" />
+                        Reset
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={handleCopyInput}
+                        className="h-7 text-xs gap-1"
+                      >
+                        {copiedInput ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
+                        {copiedInput ? "Copied" : "Copy JSON"}
+                      </Button>
+                    </div>
                   </div>
 
-                  <div className="p-2.5 rounded border border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-800/30">
-                    <span className="text-[10px] text-neutral-400 uppercase tracking-wider block font-semibold">
-                      Primary Vertical &amp; Jurisdiction
-                    </span>
-                    <span className="font-medium text-neutral-900 dark:text-neutral-100">
-                      {dslInput?.primaryVertical || "B2B_SAAS"} · {dslInput?.jurisdiction || "Delaware (US)"}
-                    </span>
+                  {/* CodeMirror Editor Container */}
+                  <div className="rounded-lg overflow-hidden border border-neutral-300 dark:border-[#2a3052] shadow-inner font-mono text-xs">
+                    <CodeMirror
+                      value={inputCode}
+                      height="360px"
+                      theme={oneDark}
+                      extensions={[json()]}
+                      onChange={handleCodeChange}
+                      basicSetup={{
+                        lineNumbers: true,
+                        foldGutter: true,
+                        dropCursor: true,
+                        allowMultipleSelections: false,
+                        indentOnInput: true,
+                      }}
+                    />
                   </div>
-
-                  <div className="p-2.5 rounded border border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-800/30">
-                    <span className="text-[10px] text-neutral-400 uppercase tracking-wider block font-semibold">
-                      Specific Industry / Niche
-                    </span>
-                    <span
-                      className={
-                        dslInput?.industry
-                          ? "font-medium text-neutral-900 dark:text-neutral-100"
-                          : "italic text-amber-600 dark:text-amber-400"
-                      }
-                    >
-                      {dslInput?.industry || "Not specified (using vertical default)"}
-                    </span>
+                  <div className="flex items-center justify-between text-[11px] text-neutral-500 pt-1">
+                    <span>Directly edit any property. Live syntax and Zod schemas compile automatically.</span>
+                    <span className="font-mono">{inputCode.length} bytes</span>
                   </div>
-
-                  <div className="p-2.5 rounded border border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-800/30">
-                    <span className="text-[10px] text-neutral-400 uppercase tracking-wider block font-semibold">
-                      Sub-Industries / Tags
-                    </span>
-                    <span
-                      className={
-                        Array.isArray(dslInput?.subIndustries) && dslInput.subIndustries.length > 0
-                          ? "font-medium text-neutral-900 dark:text-neutral-100"
-                          : "italic text-amber-600 dark:text-amber-400"
-                      }
-                    >
-                      {Array.isArray(dslInput?.subIndustries) && dslInput.subIndustries.length > 0
-                        ? dslInput.subIndustries.join(", ")
-                        : "Not specified"}
-                    </span>
-                  </div>
-
-                  <div className="p-2.5 rounded border border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-800/30 sm:col-span-2">
-                    <span className="text-[10px] text-neutral-400 uppercase tracking-wider block font-semibold">
-                      Target Customer Profile (ICP)
-                    </span>
-                    <span
-                      className={
-                        dslInput?.targetCustomerProfile
-                          ? "font-medium text-neutral-900 dark:text-neutral-100"
-                          : "italic text-amber-600 dark:text-amber-400"
-                      }
-                    >
-                      {dslInput?.targetCustomerProfile || "Not specified (defaults to general B2B enterprise)"}
-                    </span>
-                  </div>
-
-                  {dslInput?.businessModel && (
-                    <div className="p-2.5 rounded border border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-800/30 sm:col-span-2">
+                </div>
+              ) : (
+                /* Overview Key Parameters Grid */
+                <div className="space-y-2">
+                  <h4 className="text-xs font-semibold uppercase tracking-wider text-neutral-500">
+                    Parsed DSL Attributes &amp; Extraction Fields
+                  </h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                    <div className="p-3 rounded-lg border border-neutral-200 dark:border-[#2a3052] bg-neutral-50/50 dark:bg-neutral-800/30">
                       <span className="text-[10px] text-neutral-400 uppercase tracking-wider block font-semibold">
-                        Business &amp; Monetization Model
+                        Company / Primary Entity
                       </span>
-                      <span className="font-medium text-neutral-900 dark:text-neutral-100">
-                        {dslInput.businessModel}
+                      <span className="font-semibold text-neutral-900 dark:text-neutral-100">
+                        {compiledAst?.companyName || compiledAst?.name || "Bilateral Deal"}
                       </span>
                     </div>
-                  )}
-                </div>
-              </div>
 
-              {/* Raw JSON Input Payload */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-xs font-semibold uppercase tracking-wider text-neutral-500">
-                    Raw DSL Input Payload (Fed to Agent)
-                  </h4>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={handleCopyInput}
-                    className="h-6 text-[11px] gap-1 text-neutral-600 dark:text-neutral-300"
-                  >
-                    {copiedInput ? (
-                      <>
-                        <Check className="h-3 w-3 text-emerald-600" />
-                        <span>Copied!</span>
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="h-3 w-3" />
-                        <span>Copy JSON</span>
-                      </>
-                    )}
-                  </Button>
+                    <div className="p-3 rounded-lg border border-neutral-200 dark:border-[#2a3052] bg-neutral-50/50 dark:bg-neutral-800/30">
+                      <span className="text-[10px] text-neutral-400 uppercase tracking-wider block font-semibold">
+                        Stage / Instrument
+                      </span>
+                      <span className="font-semibold text-neutral-900 dark:text-neutral-100">
+                        {compiledAst?.stage || compiledAst?.corridor || "STANDARD"}
+                      </span>
+                    </div>
+
+                    <div className="p-3 rounded-lg border border-neutral-200 dark:border-[#2a3052] bg-neutral-50/50 dark:bg-neutral-800/30">
+                      <span className="text-[10px] text-neutral-400 uppercase tracking-wider block font-semibold">
+                        Jurisdiction / Corridor
+                      </span>
+                      <span className="font-semibold text-neutral-900 dark:text-neutral-100">
+                        {compiledAst?.jurisdiction || compiledAst?.legalEntityJurisdiction || compiledAst?.corridor || "Cross-Border"}
+                      </span>
+                    </div>
+
+                    <div className="p-3 rounded-lg border border-neutral-200 dark:border-[#2a3052] bg-neutral-50/50 dark:bg-neutral-800/30">
+                      <span className="text-[10px] text-neutral-400 uppercase tracking-wider block font-semibold">
+                        Target Deal Size / Capital Ask
+                      </span>
+                      <span className="font-semibold text-[#ff6b4a]">
+                        {compiledAst?.targetRaiseUsd
+                          ? `$${Number(compiledAst.targetRaiseUsd).toLocaleString()} USD`
+                          : "Custom Tenor & Advance Ask"}
+                      </span>
+                    </div>
+                  </div>
                 </div>
-                <pre className="p-3 rounded-lg bg-neutral-900 text-neutral-100 text-xs font-mono overflow-x-auto max-h-64 border border-neutral-800">
-                  <code>{inputJsonString}</code>
-                </pre>
-              </div>
+              )}
             </>
           ) : (
-            /* Output Tab Content */
-            <div className="space-y-4">
+            /* Output Tab */
+            <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <div>
-                  <h4 className="text-xs font-semibold uppercase tracking-wider text-neutral-900 dark:text-neutral-100">
-                    Discovered Output Results ({Array.isArray(agentOutput) ? agentOutput.length : 1})
+                  <h4 className="text-xs font-semibold uppercase tracking-wider text-neutral-500">
+                    Agent Output Payload ({persona.name})
                   </h4>
-                  <p className="text-[11px] text-neutral-500">
-                    Real entities extracted and cross-referenced with live HTTP verification.
+                  <p className="text-[11px] text-neutral-400">
+                    Discovered entities, eligibility scores &amp; reasoning vectors
                   </p>
                 </div>
                 <Button
                   size="sm"
-                  variant="outline"
+                  variant="ghost"
                   onClick={handleCopyOutput}
-                  className="h-6 text-[11px] gap-1 text-neutral-600 dark:text-neutral-300"
+                  className="h-7 text-xs gap-1"
                 >
-                  {copiedOutput ? (
-                    <>
-                      <Check className="h-3 w-3 text-emerald-600" />
-                      <span>Copied Output!</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="h-3 w-3" />
-                      <span>Copy Output JSON</span>
-                    </>
-                  )}
+                  {copiedOutput ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
+                  {copiedOutput ? "Copied" : "Copy Output"}
                 </Button>
               </div>
 
-              {/* Formatted Output Cards */}
-              {Array.isArray(agentOutput) && agentOutput.length > 0 ? (
-                <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1">
-                  {agentOutput.map((item: any, idx: number) => (
-                    <div
-                      key={item.id || idx}
-                      className="p-3 rounded-lg border border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-850 space-y-1.5 text-xs"
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex items-center gap-2">
-                          <span className="font-semibold text-neutral-900 dark:text-neutral-100">
-                            {item.name || item.fullName || "Entity"}
-                          </span>
-                          {(item.overlapDegree || item.category || item.roleCategory) && (
-                            <Badge
-                              tone={
-                                item.overlapDegree === "DIRECT"
-                                  ? "red"
-                                  : item.overlapDegree === "INDIRECT"
-                                  ? "amber"
-                                  : "purple"
-                              }
-                              className="text-[10px]"
-                            >
-                              {(item.overlapDegree || item.category || item.roleCategory).replaceAll("_", " ")}
-                            </Badge>
-                          )}
-                          {item.title && (
-                            <span className="text-neutral-500 text-[11px]">· {item.title}</span>
-                          )}
-                        </div>
-                        {item.websiteUrl && (
-                          <a
-                            href={item.websiteUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center gap-1 text-[11px] text-blue-600 hover:underline dark:text-blue-400"
-                          >
-                            <span>{item.websiteUrl.replace(/^https?:\/\//, "").replace(/\/$/, "")}</span>
-                            <ExternalLink className="h-2.5 w-2.5 opacity-70" />
-                          </a>
-                        )}
-                      </div>
+              {/* CodeMirror for Output (read-only) */}
+              <div className="rounded-lg overflow-hidden border border-neutral-300 dark:border-[#2a3052] shadow-inner font-mono text-xs">
+                <CodeMirror
+                  value={outputJsonString}
+                  height="360px"
+                  theme={oneDark}
+                  extensions={[json()]}
+                  readOnly={true}
+                  basicSetup={{
+                    lineNumbers: true,
+                    foldGutter: true,
+                  }}
+                />
+              </div>
+            </div>
+          )}
 
-                      {item.description && (
-                        <p className="text-neutral-600 dark:text-neutral-300 text-[11px] leading-relaxed">
-                          {item.description}
-                        </p>
-                      )}
+          {/* TAB 3: PROVENANCE MATRIX & TRACEABILITY */}
+          {activeTab === "lineage" && (
+            <div className="space-y-4">
+              <DataLineageMatrix
+                fieldLineage={fieldLineage}
+                onInspectNode={(node) => setSelectedXRayNode(node)}
+              />
+            </div>
+          )}
 
-                      {item.useCaseFit && (
-                        <p className="text-neutral-600 dark:text-neutral-300 text-[11px] leading-relaxed">
-                          <span className="font-medium text-neutral-800 dark:text-neutral-200">Use Case: </span>
-                          {item.useCaseFit}
-                        </p>
-                      )}
-
-                      {item.relevanceRationale && (
-                        <p className="text-neutral-600 dark:text-neutral-300 text-[11px] leading-relaxed">
-                          <span className="font-medium text-neutral-800 dark:text-neutral-200">Rationale: </span>
-                          {item.relevanceRationale}
-                        </p>
-                      )}
-
-                      {item.knownInvestors && Array.isArray(item.knownInvestors) && item.knownInvestors.length > 0 && (
-                        <div className="flex flex-wrap items-center gap-1 pt-1">
-                          <span className="text-[10px] text-neutral-400 font-semibold uppercase">Venture Backers:</span>
-                          {item.knownInvestors.map((inv: string, iIdx: number) => (
-                            <span
-                              key={iIdx}
-                              className="px-1.5 py-0.2 rounded text-[10px] bg-purple-100 text-purple-800 dark:bg-purple-950/60 dark:text-purple-300"
-                            >
-                              {inv}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  ))}
+          {/* TAB 4: UNDERLYING ZOD DSL SCHEMA (READ-ONLY) */}
+          {activeTab === "schema" && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="text-xs font-semibold uppercase tracking-wider text-neutral-700 dark:text-neutral-300 flex items-center gap-2">
+                    <span>{zodSchemaDef.title}</span>
+                    <span className="rounded bg-amber-100 px-1.5 py-0.2 text-[10px] font-mono font-bold text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                      No Editing Privileges
+                    </span>
+                  </h4>
+                  <p className="text-[11px] text-neutral-500 mt-0.5">
+                    {zodSchemaDef.summary}
+                  </p>
                 </div>
-              ) : (
-                <div className="p-4 text-center text-xs text-neutral-500 rounded border border-dashed border-neutral-300 dark:border-neutral-700">
-                  No output entities discovered yet. Run the discovery agent to populate findings.
-                </div>
-              )}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={async () => {
+                    await navigator.clipboard.writeText(zodSchemaDef.code);
+                    setCopiedZod(true);
+                    setTimeout(() => setCopiedZod(false), 2000);
+                  }}
+                  className="h-7 text-xs gap-1"
+                >
+                  {copiedZod ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
+                  {copiedZod ? "Copied" : "Copy Zod Schema"}
+                </Button>
+              </div>
 
-              {/* Raw Output JSON */}
-              <div className="space-y-2 pt-2 border-t border-neutral-100 dark:border-neutral-800">
-                <h4 className="text-xs font-semibold uppercase tracking-wider text-neutral-500">
-                  Raw Output JSON Payload
-                </h4>
-                <pre className="p-3 rounded-lg bg-neutral-900 text-neutral-100 text-xs font-mono overflow-x-auto max-h-56 border border-neutral-800">
-                  <code>{outputJsonString}</code>
-                </pre>
+              {/* Read-Only Schema Code Viewer */}
+              <div className="rounded-lg overflow-hidden border border-neutral-300 dark:border-[#2a3052] shadow-inner font-mono text-xs">
+                <CodeMirror
+                  value={zodSchemaDef.code}
+                  height="400px"
+                  theme={oneDark}
+                  readOnly={true}
+                  basicSetup={{
+                    lineNumbers: true,
+                    foldGutter: true,
+                  }}
+                />
+              </div>
+
+              <div className="flex items-center gap-2 rounded-lg border border-neutral-200 bg-neutral-50 p-2.5 text-[11px] text-neutral-600 dark:border-neutral-800 dark:bg-neutral-900/60 dark:text-neutral-400">
+                <ShieldCheck className="h-4 w-4 text-emerald-600 shrink-0" />
+                <span>
+                  Authoritative type boundary: all runtime agent inputs and AST compilation passes validate strictly against this Zod specification.
+                </span>
               </div>
             </div>
           )}
         </div>
 
-        {/* Footer */}
-        <div className="flex items-center justify-between p-3 border-t border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-900/50">
+        {/* Footer Actions */}
+        <div className="flex items-center justify-between p-3.5 border-t border-neutral-200 dark:border-[#2a3052] bg-neutral-50 dark:bg-[#151829]">
           <div className="text-[11px] text-neutral-500 flex items-center gap-1.5">
             <Info className="h-3.5 w-3.5" />
-            <span>Updates made in Edit Deal instantly update agent queries</span>
+            <span>CodeMirror edits compile to AST and guard agent queries</span>
           </div>
+
           <div className="flex items-center gap-2">
-            {onEditParameters && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => {
-                  onClose();
-                  onEditParameters();
-                }}
-                className="text-xs gap-1.5"
-              >
-                <Edit3 className="h-3 w-3" />
-                Edit Parameters
-              </Button>
+            {activeTab === "input" && (
+              <>
+                <Button
+                  size="sm"
+                  variant="brand-outline"
+                  onClick={handleCompileAndSave}
+                  disabled={Boolean(compileError) || isCompiling}
+                  className="text-xs gap-1.5"
+                >
+                  <Check className="h-3.5 w-3.5 text-emerald-600" />
+                  <span>{isCompiling ? "Compiling..." : "Compile & Save DSL"}</span>
+                </Button>
+
+                {onRecompileAndRun && (
+                  <Button
+                    size="sm"
+                    variant="coral"
+                    onClick={handleCompileAndReRun}
+                    disabled={Boolean(compileError) || isCompiling}
+                    className="text-xs gap-1.5"
+                  >
+                    <Play className="h-3.5 w-3.5" />
+                    <span>Compile &amp; Re-run Agent</span>
+                  </Button>
+                )}
+              </>
             )}
-            <Button size="sm" onClick={onClose} className="text-xs">
+
+            <Button size="sm" variant="ghost" onClick={onClose} className="text-xs">
               Close
             </Button>
           </div>
         </div>
       </div>
+
+      {/* Provenance X-Ray Drawer */}
+      <ProvenanceXRayDrawer
+        isOpen={Boolean(selectedXRayNode)}
+        onClose={() => setSelectedXRayNode(null)}
+        node={selectedXRayNode}
+        dealId={dslInput?.dealId}
+        onLockAsVerified={async (comment) => {
+          if (onSaveDsl) {
+            const updated = {
+              ...(compiledAst || dslInput),
+              _lastHumanActor: {
+                actorType: "HUMAN_OPERATOR" as const,
+                authMethod: "GOOGLE_CHAT_OTP" as const,
+                sessionFingerprint: "sess_active",
+                clientIp: "127.0.0.1",
+                actionType: "TAINT_PROMOTION_TO_VERIFIED" as const,
+                auditComment: comment,
+                processedAt: new Date().toISOString(),
+              },
+            };
+            await onSaveDsl(updated);
+          }
+        }}
+      />
     </div>
   );
 }

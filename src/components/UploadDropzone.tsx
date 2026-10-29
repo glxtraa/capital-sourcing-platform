@@ -248,7 +248,7 @@ export function UploadDropzone({ existingDealId }: { existingDealId?: string } =
             type="text"
             value={dealName}
             onChange={(e) => setDealName(e.target.value)}
-            placeholder="e.g. Favorite Medium Asia / TISI"
+            placeholder="e.g. Apex Global Logistics / Cross-Border Receivables"
             className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-neutral-500 dark:border-neutral-700 dark:bg-neutral-900"
           />
         </div>

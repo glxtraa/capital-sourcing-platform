@@ -13,33 +13,39 @@ export default async function VcDealDetailPage({
   params: Promise<{ dealId: string }>;
 }) {
   const { dealId } = await params;
-  const deal = await db.startupDeal.findUnique({
-    where: { id: dealId },
-    include: {
-      documents: { orderBy: { uploadedAt: "asc" } },
-      founders: true,
-      capTable: true,
-      financingAsks: true,
-      riskFlags: { orderBy: { severity: "desc" } },
-      competitors: { orderBy: { createdAt: "asc" } },
-      commercialProspects: {
-        include: {
-          contacts: { orderBy: { createdAt: "asc" } },
-        },
-        orderBy: { createdAt: "asc" },
-      },
-      matches: {
-        include: {
-          investor: {
-            include: { documentsRequired: true },
+  const [deal, allInvestors] = await Promise.all([
+    db.startupDeal.findUnique({
+      where: { id: dealId },
+      include: {
+        documents: { orderBy: { uploadedAt: "asc" } },
+        founders: true,
+        capTable: true,
+        financingAsks: true,
+        riskFlags: { orderBy: { severity: "desc" } },
+        competitors: { orderBy: { createdAt: "asc" } },
+        commercialProspects: {
+          include: {
+            contacts: { orderBy: { createdAt: "asc" } },
           },
+          orderBy: { createdAt: "asc" },
         },
-        orderBy: [{ isLeadCandidate: "desc" }, { thesisResonanceScore: "desc" }],
+        matches: {
+          include: {
+            investor: {
+              include: { documentsRequired: true },
+            },
+          },
+          orderBy: [{ isLeadCandidate: "desc" }, { thesisResonanceScore: "desc" }],
+        },
+        syndicateBlueprints: { orderBy: { createdAt: "desc" }, take: 1 },
+        researchRuns: { orderBy: { startedAt: "desc" } },
       },
-      syndicateBlueprints: { orderBy: { createdAt: "desc" }, take: 1 },
-      researchRuns: { orderBy: { startedAt: "desc" } },
-    },
-  });
+    }),
+    db.startupInvestor.findMany({
+      select: { id: true, name: true, type: true },
+      orderBy: { name: "asc" },
+    }),
+  ]);
 
   if (!deal) notFound();
 
@@ -65,7 +71,20 @@ export default async function VcDealDetailPage({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <VcDealActions dealId={deal.id} hasMatches={deal.matches.length > 0} />
+          <a
+            href={`/api/export/deal/${deal.id}?format=xlsx`}
+            className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300 flex items-center gap-1.5 shadow-2xs transition-colors"
+            title="Download multi-tab deal spreadsheet for Google Sheets or Excel"
+          >
+            <span>📊 Export Deal Sheet (.xlsx)</span>
+          </a>
+          <VcDealActions
+            dealId={deal.id}
+            hasMatches={deal.matches.length > 0}
+            hasExtracted={deal.status !== "UPLOADING" || deal.founders.length > 0 || deal.financingAsks.length > 0}
+            hasIntel={deal.competitors.length > 0 && deal.commercialProspects.length > 0}
+            hasBenchmark={deal.syndicateBlueprints.length > 0}
+          />
           <DeleteDealButton
             dealId={deal.id}
             dealName={deal.companyName}
@@ -77,7 +96,7 @@ export default async function VcDealDetailPage({
       </div>
 
       {/* Structured Interactive Workspace */}
-      <VcDealWorkspaceTabs deal={deal} />
+      <VcDealWorkspaceTabs deal={deal} allInvestors={allInvestors} />
     </div>
   );
 }

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { reconcileStartupExtractions } from "@/agents/vc/vc-reconciliation";
 import type { StartupDocumentExtraction } from "@/dsl/vc";
+import { getTaintPolicyMap } from "@/lib/taint-policy";
 
 export const maxDuration = 30;
 
@@ -13,7 +14,7 @@ export async function POST(
 
   const deal = await db.startupDeal.findUnique({
     where: { id: dealId },
-    include: { documents: true },
+    include: { documents: true, riskFlags: true },
   });
 
   if (!deal) {
@@ -31,11 +32,26 @@ export async function POST(
     );
   }
 
-  const extractions = deal.documents.map(
-    (d) => d.extractedRaw as unknown as StartupDocumentExtraction,
+  const policyMap = await getTaintPolicyMap("VC");
+  const existingFlagMap = new Map(
+    deal.riskFlags.map((rf) => [
+      `${rf.category}::${rf.description.trim().toLowerCase()}`,
+      rf,
+    ]),
   );
 
-  const reconciliation = reconcileStartupExtractions(deal.id, deal.companyName, extractions);
+  const extractions = deal.documents.map((d) => ({
+    ...(d.extractedRaw as unknown as StartupDocumentExtraction),
+    _taintOverride: d.taintOverride,
+    _fileName: d.fileName,
+  }));
+
+  const reconciliation = reconcileStartupExtractions(
+    deal.id,
+    deal.companyName,
+    extractions,
+    policyMap,
+  );
 
   if (!reconciliation.startupDealSpec) {
     return NextResponse.json({ error: "Failed to produce startup deal spec" }, { status: 500 });
@@ -73,9 +89,9 @@ export async function POST(
     await tx.startupCapTable.create({
       data: {
         dealId,
-        foundersOwnershipPct: spec.capTable.foundersOwnershipPct ?? 80,
-        investorOwnershipPct: spec.capTable.investorOwnershipPct ?? 10,
-        optionPoolPct: spec.capTable.optionPoolPct ?? 10,
+        foundersOwnershipPct: spec.capTable.foundersOwnershipPct ?? null,
+        investorOwnershipPct: spec.capTable.investorOwnershipPct ?? null,
+        optionPoolPct: spec.capTable.optionPoolPct ?? null,
         safesNotesOutstandingUsd: spec.capTable.safesNotesOutstandingUsd ?? 0,
         safeHoldersJson: spec.capTable.safeHolders as any,
         commonHoldersJson: spec.capTable.commonHolders as any,
@@ -88,25 +104,37 @@ export async function POST(
     await tx.startupFinancingAsk.create({
       data: {
         dealId,
-        targetRaiseUsd: spec.financingAsk.targetRaiseUsd ?? 1500000,
-        instrumentType: spec.financingAsk.instrumentType,
+        targetRaiseUsd: spec.financingAsk.targetRaiseUsd ?? null,
+        instrumentType: spec.financingAsk.instrumentType ?? null,
         valuationCapUsd: spec.financingAsk.valuationCapUsd ?? null,
         discountPct: spec.financingAsk.discountPct ?? null,
-        plannedRunwayMonths: spec.financingAsk.plannedRunwayMonths ?? 18,
+        plannedRunwayMonths: spec.financingAsk.plannedRunwayMonths ?? null,
         leadCommitted: spec.financingAsk.leadCommitted ?? false,
         committedAmountUsd: spec.financingAsk.committedAmountUsd ?? 0,
       },
     });
 
-    // 5. Persist Risk Flags
+    // 5. Persist Risk Flags (preserving human verification status)
     if (spec.riskFlags.length > 0) {
       await tx.startupRiskFlag.createMany({
-        data: spec.riskFlags.map((rf) => ({
-          dealId,
-          category: rf.category,
-          severity: rf.severity,
-          description: rf.description,
-        })),
+        data: spec.riskFlags.map((rf) => {
+          const prev = existingFlagMap.get(
+            `${rf.category}::${rf.description.trim().toLowerCase()}`,
+          );
+          return {
+            dealId,
+            category: rf.category,
+            severity: rf.severity,
+            description: rf.description,
+            sourceFileName: rf.sourceFileName ?? prev?.sourceFileName ?? null,
+            evidenceSnippet: rf.evidenceSnippet ?? prev?.evidenceSnippet ?? null,
+            resolved: prev?.resolved ?? false,
+            verificationStatus: prev?.verificationStatus ?? "UNVERIFIED",
+            verifiedBy: prev?.verifiedBy ?? null,
+            verifiedAt: prev?.verifiedAt ?? null,
+            verificationNotes: prev?.verificationNotes ?? null,
+          };
+        }),
       });
     }
 

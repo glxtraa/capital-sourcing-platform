@@ -57,11 +57,11 @@ export async function POST(req: Request) {
     const legalEntityJurisdiction =
       typeof body.legalEntityJurisdiction === "string" && body.legalEntityJurisdiction.trim()
         ? body.legalEntityJurisdiction.trim()
-        : "Delaware (US)";
+        : null;
 
     const targetRaiseUsd = typeof body.targetRaiseUsd === "number" && body.targetRaiseUsd > 0
       ? body.targetRaiseUsd
-      : 1500000;
+      : null;
 
     const valuationCapUsd = typeof body.valuationCapUsd === "number" && body.valuationCapUsd > 0
       ? body.valuationCapUsd
@@ -70,7 +70,7 @@ export async function POST(req: Request) {
     const instrumentType =
       body.instrumentType && Object.values(StartupInstrumentType).includes(body.instrumentType)
         ? body.instrumentType
-        : StartupInstrumentType.POST_MONEY_SAFE;
+        : null;
 
     const deal = await db.startupDeal.create({
       data: {
@@ -84,7 +84,7 @@ export async function POST(req: Request) {
             targetRaiseUsd,
             instrumentType,
             valuationCapUsd,
-            plannedRunwayMonths: typeof body.plannedRunwayMonths === "number" ? body.plannedRunwayMonths : 18,
+            plannedRunwayMonths: typeof body.plannedRunwayMonths === "number" ? body.plannedRunwayMonths : null,
           },
         },
         capTable: {

@@ -3,6 +3,8 @@ import { db } from "@/lib/db";
 import { matchStartupDeal } from "@/lib/vc-matching";
 import { reconcileStartupExtractions } from "@/agents/vc/vc-reconciliation";
 import type { StartupDocumentExtraction } from "@/dsl/vc";
+import { isBlockingRiskFlag } from "@/dsl/provenance";
+import { getTaintPolicyMap } from "@/lib/taint-policy";
 
 export const maxDuration = 30;
 
@@ -29,14 +31,35 @@ export async function POST(
     return NextResponse.json({ error: "Startup deal not found" }, { status: 404 });
   }
 
+  const blockingFlags = deal.riskFlags.filter((rf) => isBlockingRiskFlag(rf));
+  if (blockingFlags.length > 0) {
+    return NextResponse.json(
+      {
+        error: `Matching blocked: ${blockingFlags.length} high-severity or security risk flag(s) require Human Verification ("Verify Safe" or "Waive with Notes") in Step 2 before running Capital Matching.`,
+        blockingFlags,
+      },
+      { status: 409 },
+    );
+  }
+
   await db.startupDeal.update({ where: { id: dealId }, data: { status: "MATCHING" } });
 
   try {
+    const policyMap = await getTaintPolicyMap("VC");
     const extractions = deal.documents
-      .map((d) => d.extractedRaw)
-      .filter(Boolean) as unknown as StartupDocumentExtraction[];
+      .filter((d) => Boolean(d.extractedRaw))
+      .map((d) => ({
+        ...(d.extractedRaw as unknown as StartupDocumentExtraction),
+        _taintOverride: d.taintOverride,
+        _fileName: d.fileName,
+      }));
 
-    const reconciliation = reconcileStartupExtractions(deal.id, deal.companyName, extractions);
+    const reconciliation = reconcileStartupExtractions(
+      deal.id,
+      deal.companyName,
+      extractions,
+      policyMap,
+    );
     const spec = reconciliation.startupDealSpec;
     if (!spec) {
       return NextResponse.json(

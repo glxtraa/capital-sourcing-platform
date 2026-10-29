@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   FileText,
@@ -39,6 +40,20 @@ import { TradePipelineExplainer } from "@/components/TradePipelineExplainer";
 import { validateTradeFunderDSL } from "@/dsl/trade";
 import { EditTradeDealModal } from "@/components/EditTradeDealModal";
 import { DocumentExtractionModal } from "@/components/DocumentExtractionModal";
+import { AgentDslModal } from "@/components/AgentDslModal";
+import { DealPipelineStepper } from "@/components/DealPipelineStepper";
+import { TaintPolicyDrawer } from "@/components/TaintPolicyDrawer";
+import { RiskFlagVerificationCard } from "@/components/RiskFlagVerificationCard";
+import { isBlockingRiskFlag, resolveDocumentTaint } from "@/dsl/provenance";
+import { DealExecutionTimeline } from "@/components/DealExecutionTimeline";
+import { TabDslInspectorPanel } from "@/components/dsl/TabDslInspectorPanel";
+import { TRADE_DEAL_SPEC_FIELDS } from "@/dsl/field-documentation";
+import { TabSectionNav, CardNextSectionCue, scrollToSectionWithHighlight } from "@/components/navigation/TabSectionNav";
+import { ProvenancePill, ProvenanceXRayDrawer, DataLineageMatrix } from "@/components/provenance";
+import { synthesizeFieldLineageFromDsl, type FieldLineageNode } from "@/dsl/provenance";
+import { MatchCriteriaAndDocsChecklist } from "@/components/MatchCriteriaAndDocsChecklist";
+import { TradeFunderInspectorModal } from "@/components/TradeFunderInspectorModal";
+import { evaluateTradeFunderCriteria } from "@/lib/trade-matching";
 
 export interface TradeDealWorkspaceTabsProps {
   deal: {
@@ -55,6 +70,7 @@ export interface TradeDealWorkspaceTabsProps {
       tradeLeg: string | null;
       documentTypes: string[];
       extractedRaw: any;
+      taintOverride?: string | null;
       uploadedAt: string | Date;
     }>;
     parties: Array<{
@@ -95,6 +111,12 @@ export interface TradeDealWorkspaceTabsProps {
       category: string;
       severity: number;
       description: string;
+      verificationStatus?: string | null;
+      verifiedBy?: string | null;
+      verifiedAt?: string | Date | null;
+      verificationNotes?: string | null;
+      sourceFileName?: string | null;
+      evidenceSnippet?: string | null;
     }>;
     matches: Array<{
       id: string;
@@ -114,6 +136,16 @@ export interface TradeDealWorkspaceTabsProps {
         pricingProvenance?: any;
         deskContacts?: any;
         notes?: string | null;
+        minTicketUsd?: number | null;
+        maxTicketUsd?: number | null;
+        supportedCorridors?: string[];
+        supportedCommodities?: string[];
+        excludedCommodities?: string[];
+        acceptedSupplierJurisdictions?: string[];
+        acceptedTraderJurisdictions?: string[];
+        acceptedBuyerJurisdictions?: string[];
+        gatingFactor?: string | null;
+        documentsRequired?: Array<{ id?: string; code: string; note?: string | null }>;
       };
     }>;
     termSheets: Array<{
@@ -134,22 +166,94 @@ export interface TradeDealWorkspaceTabsProps {
 }
 
 export function TradeDealWorkspaceTabs({ deal }: TradeDealWorkspaceTabsProps) {
-  const [activeTab, setActiveTab] = useState<"termsheet" | "funders" | "audit" | "provenance">(
-    deal.termSheets.length > 0 ? "termsheet" : deal.matches.length > 0 ? "funders" : "audit",
-  );
+  const router = useRouter();
+  const blockingRisks = deal.riskFlags.filter((r) => isBlockingRiskFlag(r));
+
+  const [activeTab, setActiveTab] = useState<"provenance" | "audit" | "funders" | "termsheet">(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const tabParam = params.get("tab");
+      if (tabParam && ["provenance", "audit", "funders", "termsheet"].includes(tabParam)) {
+        return tabParam as "provenance" | "audit" | "funders" | "termsheet";
+      }
+    }
+    return deal.documents.length === 0
+      ? "provenance"
+      : blockingRisks.length > 0
+      ? "audit"
+      : deal.termSheets.length > 0
+      ? "termsheet"
+      : deal.matches.length > 0
+      ? "funders"
+      : "audit";
+  });
+
+  const switchTab = (tab: "provenance" | "audit" | "funders" | "termsheet") => {
+    setActiveTab(tab);
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.set("tab", tab);
+      window.history.replaceState(null, "", url.toString());
+    }
+  };
+
+  const jumpToWindow = (tabKey: string, sectionId?: string) => {
+    let mappedTab: "provenance" | "audit" | "funders" | "termsheet" = "provenance";
+    if (tabKey === "dataroom") mappedTab = "provenance";
+    else if (tabKey === "spec") mappedTab = "audit";
+    else if (tabKey === "matching") mappedTab = "funders";
+    else if (tabKey === "blueprint") mappedTab = "termsheet";
+
+    switchTab(mappedTab);
+    if (sectionId) {
+      setTimeout(() => scrollToSectionWithHighlight(sectionId), 120);
+    }
+  };
   const [showArchDrawer, setShowArchDrawer] = useState(false);
   const [selectedSnapshotFunder, setSelectedSnapshotFunder] = useState<any | null>(null);
+  const [selectedFunderForInspect, setSelectedFunderForInspect] = useState<any | null>(null);
   const [isEditDealOpen, setIsEditDealOpen] = useState(false);
+  const [isDslModalOpen, setIsDslModalOpen] = useState(false);
+  const [isTaintPolicyOpen, setIsTaintPolicyOpen] = useState(false);
   const [selectedDocForExtraction, setSelectedDocForExtraction] = useState<{
     id: string;
     fileName: string;
     documentTypes: string[];
     extractedRaw: any;
   } | null>(null);
-  const [hideExcludedTrade, setHideExcludedTrade] = useState<boolean>(true);
+  const [hideExcludedTrade, setHideExcludedTrade] = useState<boolean>(false);
+  const [relaxInferredTrade, setRelaxInferredTrade] = useState<boolean>(false);
 
-  const tradeExcludedMatches = deal.matches.filter((m) => m.verdict === "EXCLUDED");
-  const tradeQualifiedMatches = deal.matches.filter((m) => m.verdict !== "EXCLUDED");
+  // Helper to determine if a funder match is only failing due to inferred criteria
+  function isMatchOnlyFailingInferred(m: typeof deal.matches[0]) {
+    const buyLeg = deal.contractLegs.find((l) => l.legType === "SUPPLY_PURCHASE");
+    const sellLeg = deal.contractLegs.find((l) => l.legType === "OFFTAKE_SALE");
+    const supplier = deal.parties.find((p) => p.role === "SUPPLIER");
+    const trader = deal.parties.find((p) => p.role === "TRADER");
+    const buyer = deal.parties.find((p) => p.role === "BUYER");
+
+    const evaluatedCriteria = evaluateTradeFunderCriteria(m.funder as any, {
+      corridor: deal.corridor,
+      supplierJurisdiction: supplier?.jurisdiction,
+      traderJurisdiction: trader?.jurisdiction,
+      buyerJurisdiction: buyer?.jurisdiction,
+      commodityName: buyLeg?.commodityName ?? sellLeg?.commodityName,
+      dealVolumeUsd: buyLeg?.amountUsd ?? sellLeg?.amountUsd,
+    });
+
+    const failed = evaluatedCriteria.filter((c) => c.status === "fail");
+    if (failed.length === 0) return false;
+    return failed.every((c) => c.funderSide?.acquisitionMethod === "AGENT_INFERRED_FROM_SCOPE" || c.funderSide?.acquisitionMethod === "UNPUBLISHED_DESK_ESTIMATE");
+  }
+
+  const tradeExcludedMatches = deal.matches.filter((m) => {
+    if (relaxInferredTrade && isMatchOnlyFailingInferred(m)) return false;
+    return m.verdict === "EXCLUDED";
+  });
+  const tradeQualifiedMatches = deal.matches.filter((m) => {
+    if (relaxInferredTrade && isMatchOnlyFailingInferred(m)) return true;
+    return m.verdict !== "EXCLUDED";
+  });
   const displayedTradeMatches = hideExcludedTrade ? tradeQualifiedMatches : deal.matches;
 
   function renderHighlightedContext(context: string, snippet?: string | null) {
@@ -200,13 +304,75 @@ export function TradeDealWorkspaceTabs({ deal }: TradeDealWorkspaceTabsProps) {
   const trader = deal.parties.find((p) => p.role === "TRADER");
   const buyer = deal.parties.find((p) => p.role === "BUYER");
   const latestTermSheet = deal.termSheets[0];
+  const [selectedXRayNode, setSelectedXRayNode] = useState<FieldLineageNode | null>(null);
+
+  const tradeLineage = useMemo(() => {
+    return synthesizeFieldLineageFromDsl({
+      dealId: deal.id,
+      supplier,
+      buyer,
+      trader,
+      commodity: {
+        name: buyLeg?.commodityName || sellLeg?.commodityName || "Physical Cargo",
+        contractQuantity: buyLeg?.quantity || sellLeg?.quantity || 1,
+      },
+      reconciliationAudit: {
+        grossMarginUsd:
+          sellLeg?.amountUsd && buyLeg?.amountUsd
+            ? sellLeg.amountUsd - buyLeg.amountUsd
+            : null,
+      },
+      financingAsks: deal.financingAsks.map((a) => ({
+        amount: a.amountUsd,
+        advanceRatePct: a.advanceRatePct,
+      })),
+      documents: deal.documents,
+    });
+  }, [deal, supplier, buyer, trader, buyLeg, sellLeg]);
 
   // Pipeline Stepper status
   const steps = [
-    { id: "docs", label: "1. Documents Ingested", completed: deal.documents.length > 0, count: deal.documents.length },
-    { id: "reconciled", label: "2. Reconciled Audit", completed: deal.contractLegs.length > 0 || deal.parties.length > 0 },
-    { id: "matched", label: "3. Funder Cascade", completed: deal.matches.length > 0, count: deal.matches.length },
-    { id: "termsheet", label: "4. Indicative Term Sheet", completed: deal.termSheets.length > 0 },
+    {
+      id: "provenance",
+      stepNumber: 1,
+      label: "Documents & Lineage Provenance",
+      agentBadge: "INGEST & TAINT",
+      milestoneRange: "M1–M2",
+      topButtonHint: "1. Extract Docs",
+      completed: deal.documents.length > 0,
+      count: deal.documents.length,
+    },
+    {
+      id: "audit",
+      stepNumber: 2,
+      label: "Reconciled Trade Audit & Risk Gate",
+      agentBadge: "湊 MINATO DSL",
+      milestoneRange: "M3–M4",
+      topButtonHint: "2. Reconcile Legs",
+      completed: (deal.contractLegs.length > 0 || deal.parties.length > 0) && blockingRisks.length === 0,
+      count: deal.contractLegs.length,
+      warningCount: blockingRisks.length,
+    },
+    {
+      id: "funders",
+      stepNumber: 3,
+      label: "Funder Matches & Web Research",
+      agentBadge: "FUNDER CASCADE",
+      milestoneRange: "M5",
+      topButtonHint: "3. Match Funders",
+      completed: deal.matches.length > 0,
+      count: deal.matches.length,
+      locked: blockingRisks.length > 0,
+    },
+    {
+      id: "termsheet",
+      stepNumber: 4,
+      label: "Term Sheet & Economics",
+      agentBadge: "BENCHMARK ENGINE",
+      milestoneRange: "M6",
+      topButtonHint: "4. Benchmark Facility",
+      completed: deal.termSheets.length > 0,
+    },
   ];
 
   // Benchmark table
@@ -216,47 +382,28 @@ export function TradeDealWorkspaceTabs({ deal }: TradeDealWorkspaceTabsProps) {
 
   return (
     <div className="space-y-6">
-      {/* 4-Stage Stepper Bar */}
-      <div className="rounded-xl border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <Layers className="h-4 w-4 text-purple-600 dark:text-purple-400" />
-            <span className="text-xs font-semibold uppercase tracking-wider text-neutral-500">Pipeline Status</span>
-          </div>
+      {/* Shared 4-Stage Guided Pipeline Stepper */}
+      <DealPipelineStepper
+        assetLabel="Trade Finance"
+        steps={steps}
+        activeStepId={activeTab}
+        onSelectStep={(id) => switchTab(id as any)}
+        onOpenDslModal={() => setIsDslModalOpen(true)}
+        onOpenTaintPolicy={() => setIsTaintPolicyOpen(true)}
+        blockingRiskCount={blockingRisks.length}
+        extraToolbarActions={
           <Button
             variant="ghost"
+            size="sm"
             className="text-xs text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100"
             onClick={() => setShowArchDrawer(!showArchDrawer)}
           >
             <Sparkles className="mr-1.5 h-3.5 w-3.5 text-purple-500" />
-            {showArchDrawer ? "Hide Architecture & Sequences" : "View Architecture & Multi-Agent Flow"}
+            {showArchDrawer ? "Hide Architecture" : "View Architecture"}
             {showArchDrawer ? <ChevronUp className="ml-1 h-3.5 w-3.5" /> : <ChevronDown className="ml-1 h-3.5 w-3.5" />}
           </Button>
-        </div>
-
-        <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
-          {steps.map((st, i) => (
-            <div
-              key={st.id}
-              className={`flex items-center gap-2 rounded-lg border px-3 py-2 ${
-                st.completed
-                  ? "border-emerald-200 bg-emerald-50/40 text-emerald-800 dark:border-emerald-900/60 dark:bg-emerald-950/20 dark:text-emerald-300"
-                  : "border-neutral-200 bg-neutral-50/50 text-neutral-400 dark:border-neutral-800 dark:bg-neutral-800/30 dark:text-neutral-500"
-              }`}
-            >
-              <CheckCircle2
-                className={`h-4 w-4 shrink-0 ${st.completed ? "text-emerald-600 dark:text-emerald-400" : "text-neutral-300 dark:text-neutral-600"}`}
-              />
-              <span className="font-medium truncate">{st.label}</span>
-              {st.count !== undefined && st.count > 0 && (
-                <span className="ml-auto rounded-full bg-emerald-200/60 px-1.5 py-0.2 text-[10px] font-bold dark:bg-emerald-800/60">
-                  {st.count}
-                </span>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
+        }
+      />
 
       {/* Collapsible Architecture & Sequences Drawer */}
       {showArchDrawer && (
@@ -278,62 +425,18 @@ export function TradeDealWorkspaceTabs({ deal }: TradeDealWorkspaceTabsProps) {
         </div>
       )}
 
-      {/* Main Tabbed Navigation */}
-      <div className="border-b border-neutral-200 dark:border-neutral-800">
-        <nav className="flex space-x-4">
-          <button
-            onClick={() => setActiveTab("termsheet")}
-            className={`flex items-center gap-2 border-b-2 py-3 px-2 text-sm font-medium transition-colors ${
-              activeTab === "termsheet"
-                ? "border-purple-600 text-purple-600 dark:border-purple-400 dark:text-purple-400"
-                : "border-transparent text-neutral-500 hover:border-neutral-300 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200"
-            }`}
-          >
-            <Calculator className="h-4 w-4" />
-            Term Sheet &amp; Deterministic Economics
-            {latestTermSheet && <Badge tone="purple" className="ml-1 text-[10px]">Calculated</Badge>}
-          </button>
-
-          <button
-            onClick={() => setActiveTab("funders")}
-            className={`flex items-center gap-2 border-b-2 py-3 px-2 text-sm font-medium transition-colors ${
-              activeTab === "funders"
-                ? "border-purple-600 text-purple-600 dark:border-purple-400 dark:text-purple-400"
-                : "border-transparent text-neutral-500 hover:border-neutral-300 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200"
-            }`}
-          >
-            <Search className="h-4 w-4" />
-            Funder Matches &amp; Web Research
-            {deal.matches.length > 0 && <Badge tone="blue" className="ml-1 text-[10px]">{deal.matches.length}</Badge>}
-          </button>
-
-          <button
-            onClick={() => setActiveTab("audit")}
-            className={`flex items-center gap-2 border-b-2 py-3 px-2 text-sm font-medium transition-colors ${
-              activeTab === "audit"
-                ? "border-purple-600 text-purple-600 dark:border-purple-400 dark:text-purple-400"
-                : "border-transparent text-neutral-500 hover:border-neutral-300 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200"
-            }`}
-          >
-            <Layers className="h-4 w-4" />
-            Reconciled Trade Audit
-            {deal.contractLegs.length > 0 && <Badge tone="green" className="ml-1 text-[10px]">Reconciled</Badge>}
-          </button>
-
-          <button
-            onClick={() => setActiveTab("provenance")}
-            className={`flex items-center gap-2 border-b-2 py-3 px-2 text-sm font-medium transition-colors ${
-              activeTab === "provenance"
-                ? "border-purple-600 text-purple-600 dark:border-purple-400 dark:text-purple-400"
-                : "border-transparent text-neutral-500 hover:border-neutral-300 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200"
-            }`}
-          >
-            <FileText className="h-4 w-4" />
-            Documents &amp; Lineage Provenance
-            <Badge tone="neutral" className="ml-1 text-[10px]">{deal.documents.length}</Badge>
-          </button>
-        </nav>
-      </div>
+      {/* Interactive Deal Execution & Verification Progress Timeline */}
+      <DealExecutionTimeline
+        assetClass="TRADE"
+        dealId={deal.id}
+        currentTab={activeTab}
+        onSelectTab={(tabKey, sectionId) => jumpToWindow(tabKey, sectionId)}
+        docCount={deal.documents.length}
+        hasReconciledSpec={deal.contractLegs.length > 0 || deal.parties.length > 0}
+        unresolvedRiskCount={blockingRisks.length}
+        matchCount={deal.matches.length}
+        benchmarkCount={deal.termSheets?.length || 0}
+      />
 
       {/* TAB 1: TERM SHEET & DETERMINISTIC ECONOMICS */}
       {activeTab === "termsheet" && (
@@ -341,7 +444,7 @@ export function TradeDealWorkspaceTabs({ deal }: TradeDealWorkspaceTabsProps) {
           {latestTermSheet ? (
             <>
               {/* Deterministic Economics Header */}
-              <Card className="border-purple-200 bg-white dark:border-purple-900 dark:bg-neutral-900">
+              <Card id="section-trade-termsheet" className="border-purple-200 bg-white dark:border-purple-900 dark:bg-neutral-900">
                 <CardHeader>
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
@@ -546,7 +649,7 @@ export function TradeDealWorkspaceTabs({ deal }: TradeDealWorkspaceTabsProps) {
 
       {/* TAB 2: FUNDER MATCHES & WEB RESEARCH */}
       {activeTab === "funders" && (
-        <div className="space-y-6">
+        <div id="section-trade-matches" className="space-y-6">
           {/* Interactive Deal-Specific Funder Research Card */}
           <TradeFunderDealResearchCard
             dealId={deal.id}
@@ -555,9 +658,11 @@ export function TradeDealWorkspaceTabs({ deal }: TradeDealWorkspaceTabsProps) {
             defaultHint={`Trade finance funder for ${deal.corridor.replaceAll("_", " ")} (${buyLeg?.commodityName ?? sellLeg?.commodityName ?? "bulk commodities"}), origin ${supplier?.jurisdiction ?? "Southeast Asia"} to ${buyer?.jurisdiction ?? "Asia"}`}
           />
 
+          <CardNextSectionCue nextSectionId="section-trade-funder-grid" nextSectionLabel="Two-Tier Funder Matches & Verified Rate Sources" />
+
           {/* Two-Tier Funder Matches */}
           {deal.matches.length > 0 ? (
-            <Card>
+            <Card id="section-trade-funder-grid">
               <CardHeader>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
@@ -568,34 +673,48 @@ export function TradeDealWorkspaceTabs({ deal }: TradeDealWorkspaceTabsProps) {
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge tone="purple">Tier 1 Umbrella → Tier 2 Modular</Badge>
-                    {tradeExcludedMatches.length > 0 && (
-                      <div className="inline-flex rounded-lg border border-neutral-200 bg-white p-0.5 dark:border-neutral-700 dark:bg-neutral-800 shadow-xs">
-                        <button
-                          type="button"
-                          onClick={() => setHideExcludedTrade(true)}
-                          className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-semibold transition-all ${
-                            hideExcludedTrade
-                              ? "bg-purple-600 text-white shadow-xs"
-                              : "text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-200"
-                          }`}
-                        >
-                          <EyeOff className="h-3 w-3" />
-                          Eligible ({tradeQualifiedMatches.length})
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setHideExcludedTrade(false)}
-                          className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-semibold transition-all ${
-                            !hideExcludedTrade
-                              ? "bg-neutral-800 text-white shadow-xs dark:bg-neutral-700"
-                              : "text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-200"
-                          }`}
-                        >
-                          <Eye className="h-3 w-3" />
-                          All ({deal.matches.length})
-                        </button>
-                      </div>
-                    )}
+
+                    {/* Relax Inferred Blockers Toggle */}
+                    <button
+                      type="button"
+                      onClick={() => setRelaxInferredTrade(!relaxInferredTrade)}
+                      className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-semibold border transition-all ${
+                        relaxInferredTrade
+                          ? "bg-purple-100 text-purple-900 border-purple-300 dark:bg-purple-950/80 dark:text-purple-200 dark:border-purple-800 shadow-xs"
+                          : "bg-white text-neutral-600 border-neutral-200 hover:bg-neutral-50 dark:bg-neutral-800 dark:text-neutral-400 dark:border-neutral-700"
+                      }`}
+                      title="When enabled, funders whose only failures are unverified AI scope inferences are brought into consideration rather than being blocked."
+                    >
+                      <Sparkles className={`h-3 w-3 ${relaxInferredTrade ? "text-purple-600 dark:text-purple-400 fill-purple-600/20" : "text-neutral-400"}`} />
+                      <span>Relax Inferred Blockers</span>
+                    </button>
+
+                    <div className="inline-flex rounded-lg border border-neutral-200 bg-white p-0.5 dark:border-neutral-700 dark:bg-neutral-800 shadow-xs">
+                      <button
+                        type="button"
+                        onClick={() => setHideExcludedTrade(true)}
+                        className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-semibold transition-all ${
+                          hideExcludedTrade
+                            ? "bg-purple-600 text-white shadow-xs"
+                            : "text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-200"
+                        }`}
+                      >
+                        <EyeOff className="h-3 w-3" />
+                        Eligible ({tradeQualifiedMatches.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setHideExcludedTrade(false)}
+                        className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-semibold transition-all ${
+                          !hideExcludedTrade
+                            ? "bg-neutral-800 text-white shadow-xs dark:bg-neutral-700"
+                            : "text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-200"
+                        }`}
+                      >
+                        <Eye className="h-3 w-3" />
+                        All ({deal.matches.length})
+                      </button>
+                    </div>
                   </div>
                 </div>
               </CardHeader>
@@ -618,13 +737,17 @@ export function TradeDealWorkspaceTabs({ deal }: TradeDealWorkspaceTabsProps) {
                     const deptName = m.funder.deskContacts?.departmentName;
                     const pricingProv = m.funder.pricingProvenance;
                     const evidenceText = pricingProv?.evidenceSnippet || m.funder.rateEvidenceSnippet;
+                    const isRelaxed = relaxInferredTrade && isMatchOnlyFailingInferred(m);
+                    const effectiveVerdict = isRelaxed ? "POSSIBLE" : m.verdict;
 
                     return (
                       <div
                         key={m.id}
                         className={`rounded-xl border p-4 text-sm transition-all ${
-                          m.verdict === "EXCLUDED"
+                          effectiveVerdict === "EXCLUDED"
                             ? "border-dashed border-neutral-300 dark:border-neutral-700 bg-neutral-50/50 dark:bg-neutral-900/40 opacity-80"
+                            : isRelaxed
+                            ? "border-purple-300 bg-purple-50/30 shadow-sm dark:border-purple-800 dark:bg-purple-950/20"
                             : m.isTier1
                             ? "border-purple-300 bg-purple-50/20 shadow-sm dark:border-purple-900/60 dark:bg-purple-950/20"
                             : "border-neutral-200 dark:border-neutral-800"
@@ -638,9 +761,14 @@ export function TradeDealWorkspaceTabs({ deal }: TradeDealWorkspaceTabsProps) {
                               {m.funder.name}
                             </h4>
                             {m.isTier1 && <Badge tone="purple">Tier 1: Umbrella Facility</Badge>}
-                            <Badge tone={m.verdict === "ELIGIBLE" || m.verdict === "GOOD" ? "green" : m.verdict === "POSSIBLE" ? "blue" : "neutral"}>
-                              {m.verdict}
+                            <Badge tone={effectiveVerdict === "ELIGIBLE" || effectiveVerdict === "GOOD" ? "green" : effectiveVerdict === "POSSIBLE" ? "blue" : "neutral"}>
+                              {effectiveVerdict}
                             </Badge>
+                            {isRelaxed && (
+                              <Badge tone="purple" className="text-[10px] flex items-center gap-1 font-bold">
+                                <Sparkles className="h-3 w-3" /> Relaxed Match (Inferences Waived)
+                              </Badge>
+                            )}
                             <Badge tone="neutral" className="text-[10px]">
                               {m.funder.confidence.replaceAll("_", " ")}
                             </Badge>
@@ -654,6 +782,14 @@ export function TradeDealWorkspaceTabs({ deal }: TradeDealWorkspaceTabsProps) {
                                 <AlertTriangle className="h-3 w-3" /> DSL Data Gap ({diagnostics.completenessScorePct}%)
                               </Badge>
                             )}
+                            <button
+                              type="button"
+                              onClick={() => setSelectedFunderForInspect(m.funder)}
+                              className="inline-flex items-center gap-1 rounded bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-200 px-2 py-0.5 text-[10px] font-semibold transition-colors"
+                            >
+                              <Edit3 className="h-3 w-3 text-purple-600 dark:text-purple-400" />
+                              Inspect Funder Profile &amp; DSL
+                            </button>
                           </div>
                           <p className="text-xs text-neutral-500 mt-0.5">{m.funder.type.replaceAll("_", " ")}</p>
                         </div>
@@ -877,6 +1013,28 @@ export function TradeDealWorkspaceTabs({ deal }: TradeDealWorkspaceTabsProps) {
                           })}
                         </div>
                       )}
+
+                      {/* Match Criteria & Required Documents Checklist */}
+                      {(() => {
+                        const evaluatedCriteria = evaluateTradeFunderCriteria(m.funder as any, {
+                          corridor: deal.corridor,
+                          supplierJurisdiction: supplier?.jurisdiction,
+                          traderJurisdiction: trader?.jurisdiction,
+                          buyerJurisdiction: buyer?.jurisdiction,
+                          commodityName: buyLeg?.commodityName ?? sellLeg?.commodityName,
+                          dealVolumeUsd: buyLeg?.amountUsd ?? sellLeg?.amountUsd,
+                        });
+                        return (
+                          <MatchCriteriaAndDocsChecklist
+                            criteria={evaluatedCriteria}
+                            documentsRequired={m.funder.documentsRequired || []}
+                            uploadedDocs={deal.documents}
+                            assetLabel="trade funder"
+                            funderName={m.funder.name}
+                            defaultOpen={m.verdict === "EXCLUDED"}
+                          />
+                        );
+                      })()}
                     </div>
                   );
                 })
@@ -900,8 +1058,23 @@ export function TradeDealWorkspaceTabs({ deal }: TradeDealWorkspaceTabsProps) {
       {/* TAB 3: RECONCILED TRADE AUDIT */}
       {activeTab === "audit" && (
         <div className="space-y-6">
+          <TabSectionNav
+            sections={[
+              { id: "section-trade-spec", label: "Deal Spec & Counterparties" },
+              { id: "section-trade-legs", label: "Buy & Sell Leg Economics" },
+              {
+                id: "section-trade-risks",
+                label: "Risk Gate",
+                count: blockingRisks.length > 0 ? blockingRisks.length : deal.riskFlags.length,
+                isWarning: blockingRisks.length > 0,
+                badgeTone: blockingRisks.length > 0 ? "red" : "amber",
+              },
+              { id: "section-trade-dsl-inspector", label: "Trade DSL Inspector" },
+            ]}
+          />
+
           {/* Tripartite Structure Overview */}
-          <Card>
+          <Card id="section-trade-spec">
             <CardHeader className="flex flex-row items-center justify-between pb-3">
               <div>
                 <CardTitle>Trade Flow &amp; Tripartite Counterparties</CardTitle>
@@ -925,8 +1098,20 @@ export function TradeDealWorkspaceTabs({ deal }: TradeDealWorkspaceTabsProps) {
                   <span className="text-xs font-semibold text-neutral-400 uppercase tracking-wide">
                     Supplier (Origin)
                   </span>
-                  <p className="mt-1 font-semibold text-base">{supplier?.legalName || "Pending Extraction"}</p>
-                  <p className="text-xs text-neutral-500 mt-1">Jurisdiction: {supplier?.jurisdiction || "—"}</p>
+                  <div className="mt-1 flex items-center gap-2">
+                    <p className="font-semibold text-base">{supplier?.legalName || "Pending Extraction"}</p>
+                    <ProvenancePill
+                      node={tradeLineage["$.supplier.legalName"] || tradeLineage["$.parties.SUPPLIER.name"]}
+                      onInspect={() => setSelectedXRayNode(tradeLineage["$.supplier.legalName"] || tradeLineage["$.parties.SUPPLIER.name"])}
+                    />
+                  </div>
+                  <div className="text-xs text-neutral-500 mt-1 flex items-center gap-1.5">
+                    <span>Jurisdiction: {supplier?.jurisdiction || "—"}</span>
+                    <ProvenancePill
+                      node={tradeLineage["$.parties.SUPPLIER.jurisdiction"]}
+                      onInspect={() => setSelectedXRayNode(tradeLineage["$.parties.SUPPLIER.jurisdiction"])}
+                    />
+                  </div>
                   {supplier?.concessionOrLicenseId && (
                     <div className="mt-2 flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400">
                       <CheckCircle2 className="h-3.5 w-3.5" /> Concession/License: {supplier.concessionOrLicenseId}
@@ -938,8 +1123,20 @@ export function TradeDealWorkspaceTabs({ deal }: TradeDealWorkspaceTabsProps) {
                   <span className="text-xs font-semibold text-purple-600 dark:text-purple-400 uppercase tracking-wide">
                     Trader (Borrower / Intermediary)
                   </span>
-                  <p className="mt-1 font-semibold text-base">{trader?.legalName || "Pending Extraction"}</p>
-                  <p className="text-xs text-neutral-500 mt-1">Jurisdiction: {trader?.jurisdiction || "—"}</p>
+                  <div className="mt-1 flex items-center gap-2">
+                    <p className="font-semibold text-base">{trader?.legalName || "Pending Extraction"}</p>
+                    <ProvenancePill
+                      node={tradeLineage["$.trader.legalName"] || tradeLineage["$.parties.TRADER.name"]}
+                      onInspect={() => setSelectedXRayNode(tradeLineage["$.trader.legalName"] || tradeLineage["$.parties.TRADER.name"])}
+                    />
+                  </div>
+                  <div className="text-xs text-neutral-500 mt-1 flex items-center gap-1.5">
+                    <span>Jurisdiction: {trader?.jurisdiction || "—"}</span>
+                    <ProvenancePill
+                      node={tradeLineage["$.parties.TRADER.jurisdiction"]}
+                      onInspect={() => setSelectedXRayNode(tradeLineage["$.parties.TRADER.jurisdiction"])}
+                    />
+                  </div>
                   <p className="text-xs text-neutral-500">Bank: {trader?.bankName || "—"}</p>
                 </div>
 
@@ -947,16 +1144,31 @@ export function TradeDealWorkspaceTabs({ deal }: TradeDealWorkspaceTabsProps) {
                   <span className="text-xs font-semibold text-neutral-400 uppercase tracking-wide">
                     Buyer (Offtaker / End Receiver)
                   </span>
-                  <p className="mt-1 font-semibold text-base">{buyer?.legalName || "Pending Extraction"}</p>
-                  <p className="text-xs text-neutral-500 mt-1">Jurisdiction: {buyer?.jurisdiction || "—"}</p>
+                  <div className="mt-1 flex items-center gap-2">
+                    <p className="font-semibold text-base">{buyer?.legalName || "Pending Extraction"}</p>
+                    <ProvenancePill
+                      node={tradeLineage["$.buyer.legalName"] || tradeLineage["$.parties.BUYER.name"]}
+                      onInspect={() => setSelectedXRayNode(tradeLineage["$.buyer.legalName"] || tradeLineage["$.parties.BUYER.name"])}
+                    />
+                  </div>
+                  <div className="text-xs text-neutral-500 mt-1 flex items-center gap-1.5">
+                    <span>Jurisdiction: {buyer?.jurisdiction || "—"}</span>
+                    <ProvenancePill
+                      node={tradeLineage["$.parties.BUYER.jurisdiction"]}
+                      onInspect={() => setSelectedXRayNode(tradeLineage["$.parties.BUYER.jurisdiction"])}
+                    />
+                  </div>
                   <p className="text-xs text-neutral-500">Bank: {buyer?.bankName || "—"}</p>
                 </div>
               </div>
             </CardContent>
           </Card>
 
+          <CardNextSectionCue nextSectionId="section-trade-legs" nextSectionLabel="Buy & Sell Leg Contracts and Gross Spread" />
+
           {/* Paired Contracts Audit: Buy Leg vs Sell Leg */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div id="section-trade-legs" className="space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <Card>
               <CardHeader>
                 <CardTitle className="text-blue-600 dark:text-blue-400">Buy Leg (Supply Contract)</CardTitle>
@@ -974,11 +1186,17 @@ export function TradeDealWorkspaceTabs({ deal }: TradeDealWorkspaceTabsProps) {
                         {buyLeg.quantity.toLocaleString()} {buyLeg.unit} ({buyLeg.commodityName})
                       </span>
                     </div>
-                    <div className="flex justify-between">
+                    <div className="flex justify-between items-center">
                       <span className="text-neutral-500">Unit Price / Leg Value:</span>
-                      <span className="font-medium">
-                        ${buyLeg.unitPrice} / ${(buyLeg.amountUsd / 1_000_000).toFixed(2)}M USD
-                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-medium">
+                          ${buyLeg.unitPrice} / ${(buyLeg.amountUsd / 1_000_000).toFixed(2)}M USD
+                        </span>
+                        <ProvenancePill
+                          node={tradeLineage["$.buyLeg.amountUsd"]}
+                          onInspect={() => setSelectedXRayNode(tradeLineage["$.buyLeg.amountUsd"])}
+                        />
+                      </div>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-neutral-500">Incoterm &amp; Port:</span>
@@ -1016,11 +1234,17 @@ export function TradeDealWorkspaceTabs({ deal }: TradeDealWorkspaceTabsProps) {
                         {sellLeg.quantity.toLocaleString()} {sellLeg.unit} ({sellLeg.commodityName})
                       </span>
                     </div>
-                    <div className="flex justify-between">
+                    <div className="flex justify-between items-center">
                       <span className="text-neutral-500">Unit Price / Leg Value:</span>
-                      <span className="font-medium">
-                        ${sellLeg.unitPrice} / ${(sellLeg.amountUsd / 1_000_000).toFixed(2)}M USD
-                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-medium">
+                          ${sellLeg.unitPrice} / ${(sellLeg.amountUsd / 1_000_000).toFixed(2)}M USD
+                        </span>
+                        <ProvenancePill
+                          node={tradeLineage["$.sellLeg.amountUsd"]}
+                          onInspect={() => setSelectedXRayNode(tradeLineage["$.sellLeg.amountUsd"])}
+                        />
+                      </div>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-neutral-500">Incoterm &amp; Port:</span>
@@ -1074,168 +1298,196 @@ export function TradeDealWorkspaceTabs({ deal }: TradeDealWorkspaceTabsProps) {
               </CardContent>
             </Card>
           )}
+          </div>
 
-          {/* Risk Flags */}
-          {deal.riskFlags.length > 0 && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Corridor Audit &amp; Cross-Contract Risk Flags</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                {deal.riskFlags.map((rf) => (
-                  <div
+          <CardNextSectionCue nextSectionId="section-trade-risks" nextSectionLabel="Corridor Audit, Taint Conflicts & Human Risk Gate" />
+
+          {/* Risk Flags & Human Verification Gate */}
+          <Card id="section-trade-risks">
+            <CardHeader>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <CardTitle>Corridor Audit, Taint Conflicts &amp; Human Risk Verification Gate</CardTitle>
+                  <p className="text-xs text-neutral-500 mt-0.5">
+                    High-severity, taint-conflict, or prompt-injection flags must be verified or waived by a human operator before Funder Matching can proceed.
+                  </p>
+                </div>
+                {blockingRisks.length > 0 && (
+                  <Badge tone="red">{blockingRisks.length} Blocking Match</Badge>
+                )}
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {deal.riskFlags.length === 0 ? (
+                <p className="text-sm text-neutral-500">None flagged.</p>
+              ) : (
+                deal.riskFlags.map((rf) => (
+                  <RiskFlagVerificationCard
                     key={rf.id}
-                    className="flex items-start gap-2.5 rounded-lg border border-neutral-100 p-3 text-sm dark:border-neutral-800"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium text-neutral-800 dark:text-neutral-200">
-                          {rf.category.replaceAll("_", " ")}
-                        </span>
-                        <Badge tone={rf.severity >= 4 ? "red" : rf.severity >= 3 ? "amber" : "neutral"}>
-                          Severity {rf.severity}/5
-                        </Badge>
-                      </div>
-                      <p className="text-xs text-neutral-600 dark:text-neutral-400 mt-0.5">{rf.description}</p>
-                    </div>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-          )}
+                    dealId={deal.id}
+                    assetClass="TRADE"
+                    flag={rf}
+                    provenanceFiles={rf.sourceFileName ? [rf.sourceFileName] : []}
+                  />
+                ))
+              )}
+            </CardContent>
+          </Card>
+
+          <CardNextSectionCue nextSectionId="section-trade-dsl-inspector" nextSectionLabel="Unified Trade DSL Inspector & Versions" />
+
+          {/* Unified Tab 2 DSL Specifications, Persistent Versions & Field Guide */}
+          <div id="section-trade-dsl-inspector">
+            <TabDslInspectorPanel
+              assetClass="TRADE"
+              dealId={deal.id}
+              dealName={deal.name}
+              tabKey="spec"
+              tabLabel="2. Reconciled Trade Audit & Risk Gate"
+              items={[
+                {
+                  id: "trade-spec",
+                  dslType: "TRADE_DEAL_SPEC",
+                  title: "Bilateral Contract & Commodity Assay Spec",
+                  subtitle: `${deal.contractLegs.length} legs · ${deal.parties.length} counterparties`,
+                  payload: {
+                    dealName: deal.name,
+                    corridor: deal.corridor,
+                    status: deal.status,
+                    parties: deal.parties,
+                    contractLegs: deal.contractLegs,
+                    financingAsks: deal.financingAsks,
+                  },
+                  fieldsDoc: TRADE_DEAL_SPEC_FIELDS,
+                  onSavePayload: async () => {
+                    router.refresh();
+                  },
+                },
+              ]}
+            />
+          </div>
         </div>
       )}
 
-      {/* TAB 4: DOCUMENTS & PROVENANCE */}
+      {/* TAB 1: DOCUMENTS & PROVENANCE */}
       {activeTab === "provenance" && (
         <div className="space-y-6">
+          <TabSectionNav
+            sections={[
+              { id: "section-trade-documents", label: "Trade Documents", count: deal.documents.length },
+              { id: "section-trade-extractions", label: "Upload Dropzone" },
+              { id: "section-trade-provenance", label: "Data Provenance Trail" },
+            ]}
+          />
+
           {/* Documents List & Upload Dropzone */}
-          <Card>
+          <Card id="section-trade-documents">
             <CardHeader>
-              <div className="flex items-center justify-between">
-                <CardTitle>Uploaded Trade Deal Documents ({deal.documents.length})</CardTitle>
-                <Badge tone="neutral">Immutable Storage</Badge>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <CardTitle>Uploaded Trade Deal Documents ({deal.documents.length})</CardTitle>
+                  <p className="text-xs text-neutral-500 mt-0.5">
+                    Documents classified as <strong>AUDITED_PROOF</strong> (contracts, bills of lading, inspection certs) automatically win over <strong>UNVERIFIED_CLAIM</strong> summaries during reconciliation.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setIsTaintPolicyOpen(true)}
+                    className="text-xs gap-1.5"
+                  >
+                    Configure Taint Policy
+                  </Button>
+                  <Badge tone="neutral">Immutable Storage</Badge>
+                </div>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
               <ul className="divide-y divide-neutral-100 dark:divide-neutral-800 text-sm">
-                {deal.documents.map((doc) => (
-                  <li key={doc.id} className="py-3 flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <p className="font-medium text-neutral-900 dark:text-neutral-100">{doc.fileName}</p>
-                      <p className="text-xs text-neutral-400 mt-0.5">
-                        {(doc.sizeBytes / 1024).toFixed(1)} KB · Leg: <strong>{doc.tradeLeg || "General / Corridor"}</strong> · Types:{" "}
-                        {doc.documentTypes.join(", ") || "Unclassified"}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {doc.extractedRaw && (
-                        <Badge tone="green">Extracted</Badge>
-                      )}
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setSelectedDocForExtraction(doc)}
-                        className="h-7 text-[11px] px-2 gap-1 text-neutral-700 hover:text-neutral-900 dark:text-neutral-300"
-                        title="View or Edit Raw Extracted JSON"
-                      >
-                        <FileCode className="h-3 w-3 text-blue-600" />
-                        View / Edit JSON
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setSelectedDocForExtraction(doc)}
-                        className="h-7 text-[11px] px-2 gap-1 text-neutral-700 hover:text-neutral-900 dark:text-neutral-300"
-                        title="Re-run AI Extraction for this trade document"
-                      >
-                        <RefreshCw className="h-3 w-3 text-emerald-600" />
-                        Re-run
-                      </Button>
-                      <a
-                        href={`/api/trade-deals/${deal.id}/documents/${doc.id}/file`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-1 rounded border border-neutral-200 px-2 py-1 text-xs text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
-                      >
-                        <ExternalLink className="h-3 w-3" /> View File
-                      </a>
-                    </div>
-                  </li>
-                ))}
+                {deal.documents.map((doc) => {
+                  const docTaint = resolveDocumentTaint(
+                    doc.documentTypes ?? [],
+                    doc.taintOverride,
+                  );
+                  return (
+                    <li key={doc.id} className="py-3 flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="font-medium text-neutral-900 dark:text-neutral-100">{doc.fileName}</p>
+                          <Badge tone={docTaint === "AUDITED_PROOF" ? "green" : "amber"}>
+                            {docTaint}
+                          </Badge>
+                        </div>
+                        <p className="text-xs text-neutral-400 mt-0.5">
+                          {(doc.sizeBytes / 1024).toFixed(1)} KB · Leg: <strong>{doc.tradeLeg || "General / Corridor"}</strong> · Types:{" "}
+                          {doc.documentTypes.join(", ") || "Unclassified"}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {doc.extractedRaw && (
+                          <Badge tone="green">Extracted</Badge>
+                        )}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setSelectedDocForExtraction(doc)}
+                          className="h-7 text-[11px] px-2 gap-1 text-neutral-700 hover:text-neutral-900 dark:text-neutral-300"
+                          title="View or Edit Raw Extracted JSON"
+                        >
+                          <FileCode className="h-3 w-3 text-blue-600" />
+                          View / Edit JSON
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setSelectedDocForExtraction(doc)}
+                          className="h-7 text-[11px] px-2 gap-1 text-neutral-700 hover:text-neutral-900 dark:text-neutral-300"
+                          title="Re-run AI Extraction for this trade document"
+                        >
+                          <RefreshCw className="h-3 w-3 text-emerald-600" />
+                          Re-run
+                        </Button>
+                        <a
+                          href={`/api/trade-deals/${deal.id}/documents/${doc.id}/file`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 rounded border border-neutral-200 px-2 py-1 text-xs text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+                        >
+                          <ExternalLink className="h-3 w-3" /> View File
+                        </a>
+                      </div>
+                    </li>
+                  );
+                })}
               </ul>
-              <div className="pt-2 border-t border-neutral-100 dark:border-neutral-800">
+              <CardNextSectionCue nextSectionId="section-trade-extractions" nextSectionLabel="Upload Trade Deals & Invoices Dropzone" />
+              <div id="section-trade-extractions" className="pt-2 border-t border-neutral-100 dark:border-neutral-800">
                 <TradeUploadDropzone existingDealId={deal.id} />
               </div>
             </CardContent>
           </Card>
 
+          <CardNextSectionCue nextSectionId="section-trade-provenance" nextSectionLabel="Data Provenance & Verification Trail" />
+
           {/* Full Lineage & Provenance Audit Table */}
-          <Card>
+          <Card id="section-trade-provenance">
             <CardHeader>
               <div className="flex items-center justify-between">
                 <div>
                   <CardTitle>Data Provenance &amp; Verification Trail</CardTitle>
                   <p className="text-xs text-neutral-500 mt-0.5">
-                    Every data point entering the deterministic DSL is strictly tracked to its originating document, extraction engine, and timestamp.
+                    Every data point entering the deterministic DSL is strictly tracked across 5 causal hops: source evidence, LLM telemetry, merge arbitration, human governance, and downstream funder gates.
                   </p>
                 </div>
                 <Badge tone="purple">Full Traceability</Badge>
               </div>
             </CardHeader>
-            <CardContent>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs">
-                  <thead>
-                    <tr className="border-b border-neutral-200 dark:border-neutral-800 text-neutral-400 uppercase tracking-wider">
-                      <th className="py-2.5 px-3">DSL Field / Entity</th>
-                      <th className="py-2.5 px-3">Resolved Value</th>
-                      <th className="py-2.5 px-3">Source Document</th>
-                      <th className="py-2.5 px-3">Extraction Agent / Model</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-                    <tr>
-                      <td className="py-2.5 px-3 font-semibold text-neutral-900 dark:text-neutral-100">Supplier Identity</td>
-                      <td className="py-2.5 px-3 font-medium">{supplier?.legalName ?? "Unknown"}</td>
-                      <td className="py-2.5 px-3 text-blue-600 dark:text-blue-400">{buyLeg ? "Supply Contract" : "Document 1"}</td>
-                      <td className="py-2.5 px-3 text-neutral-500">Mistral OCR + Gemini 2.5 Flash</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2.5 px-3 font-semibold text-neutral-900 dark:text-neutral-100">Trader Intermediary</td>
-                      <td className="py-2.5 px-3 font-medium">{trader?.legalName ?? "Unknown"}</td>
-                      <td className="py-2.5 px-3 text-blue-600 dark:text-blue-400">Paired Contracts (Buy + Sell)</td>
-                      <td className="py-2.5 px-3 text-neutral-500">Deterministic Corroboration</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2.5 px-3 font-semibold text-neutral-900 dark:text-neutral-100">Buyer / Offtaker</td>
-                      <td className="py-2.5 px-3 font-medium">{buyer?.legalName ?? "Unknown"}</td>
-                      <td className="py-2.5 px-3 text-blue-600 dark:text-blue-400">{sellLeg ? "Offtake Sales Contract" : "Document 2"}</td>
-                      <td className="py-2.5 px-3 text-neutral-500">Mistral OCR + Gemini 2.5 Flash</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2.5 px-3 font-semibold text-neutral-900 dark:text-neutral-100">Supply Leg Value</td>
-                      <td className="py-2.5 px-3 font-medium">${buyLeg?.amountUsd.toLocaleString() ?? "—"} USD</td>
-                      <td className="py-2.5 px-3 text-blue-600 dark:text-blue-400">Supply Contract Ref: {buyLeg?.contractReference ?? "—"}</td>
-                      <td className="py-2.5 px-3 text-neutral-500">Commercial Parameters Parser</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2.5 px-3 font-semibold text-neutral-900 dark:text-neutral-100">Offtake Leg Value</td>
-                      <td className="py-2.5 px-3 font-medium">${sellLeg?.amountUsd.toLocaleString() ?? "—"} USD</td>
-                      <td className="py-2.5 px-3 text-blue-600 dark:text-blue-400">Offtake Contract Ref: {sellLeg?.contractReference ?? "—"}</td>
-                      <td className="py-2.5 px-3 text-neutral-500">Commercial Parameters Parser</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2.5 px-3 font-semibold text-neutral-900 dark:text-neutral-100">Cashflow Gap Days</td>
-                      <td className="py-2.5 px-3 font-medium">
-                        {buyLeg && sellLeg ? `${Math.max(0, sellLeg.tenorDays - buyLeg.tenorDays)} Days` : "—"}
-                      </td>
-                      <td className="py-2.5 px-3 text-purple-600 dark:text-purple-400">Differential Formula</td>
-                      <td className="py-2.5 px-3 text-neutral-500">Pure TypeScript Math (0% Hallucination)</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
+            <CardContent className="space-y-4">
+              <DataLineageMatrix
+                fieldLineage={tradeLineage}
+                onInspectNode={(node) => setSelectedXRayNode(node)}
+              />
             </CardContent>
           </Card>
         </div>
@@ -1438,6 +1690,14 @@ export function TradeDealWorkspaceTabs({ deal }: TradeDealWorkspaceTabsProps) {
         </div>
       )}
 
+      {/* Taint Policy Drawer */}
+      <TaintPolicyDrawer
+        isOpen={isTaintPolicyOpen}
+        onClose={() => setIsTaintPolicyOpen(false)}
+        assetClass="TRADE"
+        documents={deal.documents}
+      />
+
       {/* Edit Deal Spec Modal */}
       {isEditDealOpen && (
         <EditTradeDealModal deal={deal} onClose={() => setIsEditDealOpen(false)} />
@@ -1450,6 +1710,50 @@ export function TradeDealWorkspaceTabs({ deal }: TradeDealWorkspaceTabsProps) {
           document={selectedDocForExtraction}
           dealType="trade"
           onClose={() => setSelectedDocForExtraction(null)}
+        />
+      )}
+
+      {/* Trade DSL Studio Modal (湊 Minato) */}
+      {isDslModalOpen && (
+        <AgentDslModal
+          isOpen={isDslModalOpen}
+          agentName="Trade Bilateral Contract & Funder Matcher"
+          agentFlow="MINATO-TRADE-V2-PROVENANCE"
+          description="Synthesized bilateral trade contract legs with AUDITED_PROOF taint precedence, Incoterm discharge ports, commodity pricing, and matched global trade funder mandates."
+          dslInput={{
+            dealId: deal.id,
+            name: deal.name,
+            corridor: deal.corridor,
+            blockingRiskCount: blockingRisks.length,
+            parties: deal.parties,
+            contractLegs: deal.contractLegs,
+            financingAsks: deal.financingAsks,
+            riskFlags: deal.riskFlags,
+          }}
+          agentOutput={deal.matches}
+          onClose={() => setIsDslModalOpen(false)}
+          onEditParameters={() => {
+            setIsDslModalOpen(false);
+            setIsEditDealOpen(true);
+          }}
+        />
+      )}
+
+      {/* Split-Screen Provenance X-Ray Drawer */}
+      <ProvenanceXRayDrawer
+        isOpen={Boolean(selectedXRayNode)}
+        onClose={() => setSelectedXRayNode(null)}
+        node={selectedXRayNode}
+        dealId={deal.id}
+        assetClass="TRADE"
+      />
+
+      {/* Trade Funder Inspector Modal */}
+      {selectedFunderForInspect && (
+        <TradeFunderInspectorModal
+          funder={selectedFunderForInspect}
+          onClose={() => setSelectedFunderForInspect(null)}
+          onSaved={() => router.refresh()}
         />
       )}
     </div>

@@ -44,16 +44,18 @@ export function EditCapTableModal({
   const [safes, setSafes] = useState<SafeHolderData[]>(
     initialSafes.length > 0
       ? initialSafes
-      : [
-          {
-            holderName: "Seed Angel Syndicate",
-            investmentAmountUsd: initialSafesTotal > 0 ? initialSafesTotal : 500000,
-            instrumentType: "POST_MONEY_SAFE",
-            valuationCapUsd: 12000000,
-            discountPct: 20,
-            dateOrNotes: "Standard Post-Money SAFE",
-          },
-        ],
+      : (initialSafesTotal > 0
+          ? [
+              {
+                holderName: "Existing SAFE Noteholders",
+                investmentAmountUsd: initialSafesTotal,
+                instrumentType: "SAFE",
+                valuationCapUsd: null,
+                discountPct: null,
+                dateOrNotes: "Pre-round convertible notes",
+              },
+            ]
+          : []),
   );
 
   const [common, setCommon] = useState<CommonHolderData[]>(initialCommon);
@@ -67,12 +69,12 @@ export function EditCapTableModal({
     setSafes((prev) => [
       ...prev,
       {
-        holderName: "New SAFE Investor",
-        investmentAmountUsd: 100000,
-        instrumentType: "POST_MONEY_SAFE",
-        valuationCapUsd: 15000000,
-        discountPct: 20,
-        dateOrNotes: "Post-Money SAFE",
+        holderName: "",
+        investmentAmountUsd: 0,
+        instrumentType: "SAFE",
+        valuationCapUsd: null,
+        discountPct: null,
+        dateOrNotes: "",
       },
     ]);
   }
@@ -259,6 +261,7 @@ export function EditCapTableModal({
                           onChange={(e) => updateSafe(idx, { instrumentType: e.target.value })}
                           className="w-full rounded border border-neutral-200 bg-white px-2.5 py-1.5 text-xs text-neutral-900 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
                         >
+                          <option value="SAFE">SAFE (Unspecified)</option>
                           <option value="POST_MONEY_SAFE">Post-Money SAFE</option>
                           <option value="PRE_MONEY_SAFE">Pre-Money SAFE</option>
                           <option value="CONVERTIBLE_NOTE">Convertible Promissory Note</option>

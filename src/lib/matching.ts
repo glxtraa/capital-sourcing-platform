@@ -1,4 +1,6 @@
 import type { FinancingAsk, Party } from "@prisma/client";
+import { isJurisdictionAccepted } from "@/lib/jurisdiction-normalizer";
+import { resolveFunderCriterionProvenance, type FunderSideCriterionProvenance } from "@/dsl/provenance";
 
 /**
  * Deliberately a narrow structural type (just the fields this file reads)
@@ -10,6 +12,7 @@ import type { FinancingAsk, Party } from "@prisma/client";
  */
 interface MatchableProvider {
   id: string;
+  name?: string;
   sellerJurisdictions: string[];
   obligorJurisdictions: string[];
   minTicketUsd: number | null;
@@ -18,6 +21,9 @@ interface MatchableProvider {
   financingStructuresSupported: string[];
   gatingFactor: string | null;
   lastVerified: Date | string | null;
+  sources?: string[];
+  pricingProvenance?: any;
+  criteriaProvenance?: any[];
 }
 
 /**
@@ -46,6 +52,7 @@ export interface MatchCriterion {
   label: string;
   status: CriterionStatus;
   detail: string;
+  funderSide?: FunderSideCriterionProvenance | null;
 }
 
 export interface MatchResult {
@@ -56,9 +63,7 @@ export interface MatchResult {
 }
 
 function jurisdictionOk(providerList: string[], value: string | null): boolean {
-  if (!value) return true;
-  if (providerList.some((j) => j.toLowerCase() === "any")) return true;
-  return providerList.some((j) => j.toLowerCase().includes(value.toLowerCase()));
+  return isJurisdictionAccepted(providerList, value);
 }
 
 function ticketOk(
@@ -90,7 +95,9 @@ export function matchProvider(
     obligorJurisdiction: string | null;
   },
   ask: Pick<FinancingAsk, "amount" | "structureType">,
+  options?: { relaxInferredBlockers?: boolean },
 ): MatchResult {
+  const relaxInferred = Boolean(options?.relaxInferredBlockers);
   const reasons: string[] = [];
   const criteria: MatchCriterion[] = [];
 
@@ -105,6 +112,7 @@ export function matchProvider(
         ? `"${deal.borrowerJurisdiction}" is in the provider's accepted list`
         : "no borrower jurisdiction on file yet — not checked"
       : `"${deal.borrowerJurisdiction}" not in provider's accepted list`,
+    funderSide: resolveFunderCriterionProvenance(provider, "sellerJurisdiction"),
   });
 
   const obligorOk = jurisdictionOk(provider.obligorJurisdictions, deal.obligorJurisdiction);
@@ -118,11 +126,18 @@ export function matchProvider(
         ? `"${deal.obligorJurisdiction}" is in the provider's accepted list`
         : "no obligor jurisdiction on file yet — not checked"
       : `"${deal.obligorJurisdiction}" not in provider's accepted list`,
+    funderSide: resolveFunderCriterionProvenance(provider, "obligorJurisdiction"),
   });
 
   const { ok: ticketIsOk, reason: ticketReason } = ticketOk(provider, ask.amount);
   reasons.push(ticketReason);
-  criteria.push({ key: "ticketSize", label: "Ticket size", status: ticketIsOk ? "pass" : "fail", detail: ticketReason });
+  criteria.push({
+    key: "ticketSize",
+    label: "Ticket size",
+    status: ticketIsOk ? "pass" : "fail",
+    detail: ticketReason,
+    funderSide: resolveFunderCriterionProvenance(provider, "ticketSize"),
+  });
 
   const structureUnreviewed = provider.financingStructuresSupported.length === 0;
   const structureOk =
@@ -144,9 +159,18 @@ export function matchProvider(
       : structureOk
         ? `supports ${String(ask.structureType).replaceAll("_", " ")}`
         : `known financing_structures_supported does not include ${String(ask.structureType).replaceAll("_", " ")} — re-check the provider's actual product description before ruling this out entirely`,
+    funderSide: resolveFunderCriterionProvenance(provider, "financingStructure"),
   });
 
-  const eligibleOnPaper = sellerOk && obligorOk && ticketIsOk && structureOk;
+  const rawEligibleOnPaper = sellerOk && obligorOk && ticketIsOk && structureOk;
+
+  // If relaxed, check if failure is only unverified AI inference
+  const hardFailures = criteria.filter((c) => {
+    if (c.status !== "fail") return false;
+    const method = c.funderSide?.acquisitionMethod;
+    return method === "VERIFIED_WEB_QUOTE" || method === "REGULATORY_FILING_QUOTE" || method === "HUMAN_OPERATOR_OVERRIDE";
+  });
+  const eligibleOnPaper = rawEligibleOnPaper || (relaxInferred && hardFailures.length === 0);
 
   if (provider.gatingFactor) {
     reasons.push(`gating factor on file: ${provider.gatingFactor}`);
@@ -155,6 +179,7 @@ export function matchProvider(
       label: "Gating factor on file",
       status: "warning",
       detail: provider.gatingFactor,
+      funderSide: resolveFunderCriterionProvenance(provider, "gatingFactor"),
     });
   }
   const lastVerifiedMs = provider.lastVerified ? new Date(provider.lastVerified).getTime() : null;
@@ -169,6 +194,7 @@ export function matchProvider(
     detail: isStale
       ? "last_verified is missing or >90 days old — consider a research-refresh run before relying on this"
       : `verified ${new Date(lastVerifiedMs!).toLocaleDateString()}`,
+    funderSide: resolveFunderCriterionProvenance(provider, "dataFreshness"),
   });
 
   return { providerId: provider.id, eligibleOnPaper, criteria, reasons };
@@ -178,9 +204,10 @@ export function matchAllProviders(
   providers: MatchableProvider[],
   deal: { borrowerJurisdiction: string | null; obligorJurisdiction: string | null },
   ask: Pick<FinancingAsk, "amount" | "structureType">,
+  options?: { relaxInferredBlockers?: boolean },
 ): MatchResult[] {
   return providers
-    .map((p) => matchProvider(p, deal, ask))
+    .map((p) => matchProvider(p, deal, ask, options))
     .sort((a, b) => Number(b.eligibleOnPaper) - Number(a.eligibleOnPaper));
 }
 
