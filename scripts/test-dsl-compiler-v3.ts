@@ -164,6 +164,48 @@ Whereas the Obligor under the underlying receivables contracts is TISI, incorpor
   assert(test85Pct.some((rx) => rx.test("85%")), "85 matches '85%'");
   assert(test85Pct.some((rx) => rx.test("85 percent")), "85 matches '85 percent'");
 
+  console.log("\n--------------------------------------------------------------------------------");
+  console.log("TEST 6: Strict JSON Schema Generation (zodToResponseFormat)");
+  console.log("--------------------------------------------------------------------------------");
+  const { zodToResponseFormat } = await import("../src/lib/json-schema");
+  const { DocumentExtractionSchema } = await import("../src/dsl/schema");
+
+  const rf = zodToResponseFormat(DocumentExtractionSchema, "DocumentExtraction") as any;
+  assert(rf.type === "json_schema", "response_format.type is 'json_schema'");
+  assert(rf.json_schema.strict === true, "json_schema strict mode is true");
+  assert(
+    rf.json_schema.schema.properties.documentSummary.type === "string",
+    "documentSummary is strictly defined as type 'string' (preventing object return)"
+  );
+  assert(
+    rf.json_schema.schema.properties.parties.items.required.includes("legalName"),
+    "parties.items strictly requires 'legalName'"
+  );
+  assert(
+    rf.json_schema.schema.properties.parties.items.required.includes("role"),
+    "parties.items strictly requires 'role'"
+  );
+
+  console.log("\n--------------------------------------------------------------------------------");
+  console.log("TEST 7: Graceful Interception of Schema Mismatches (safeParse Recovery)");
+  console.log("--------------------------------------------------------------------------------");
+  // Simulate the exact malformed payload from the user's error:
+  const malformedLlmOutput = {
+    documentSummary: { summary: "Lending agreement for FM Asia", keyTerms: [] }, // object instead of string
+    parties: [{ role: "BORROWER" }], // missing legalName
+    riskFlags: [{ category: "NOT_A_REAL_CATEGORY", severity: "high" }], // invalid enum + string severity
+  };
+
+  const parseResult = DocumentExtractionSchema.safeParse(malformedLlmOutput);
+  assert(parseResult.success === false, "safeParse caught malformed schema output");
+  if (!parseResult.success) {
+    const issuePaths = parseResult.error.issues.map((i) => i.path.join("."));
+    assert(issuePaths.includes("documentSummary"), "Caught 'documentSummary' object mismatch");
+    assert(issuePaths.includes("parties.0.legalName"), "Caught missing 'legalName' on parties[0]");
+    assert(issuePaths.includes("riskFlags.0.category"), "Caught invalid category on riskFlags[0]");
+    assert(issuePaths.includes("riskFlags.0.severity"), "Caught non-numeric severity on riskFlags[0]");
+  }
+
   console.log("\n================================================================================");
   console.log(`SUMMARY: ${passed} PASSED, ${failed} FAILED`);
   console.log("================================================================================\n");

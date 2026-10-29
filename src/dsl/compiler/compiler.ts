@@ -5,6 +5,7 @@ import type {
   ChatCompletion,
 } from "openai/resources/chat/completions";
 import { getOpenRouterClient, pdfParserPlugin, EXTRACTION_MODEL } from "@/lib/openrouter";
+import { zodToResponseFormat } from "@/lib/json-schema";
 import { computePromptSha256, savePromptSnapshot } from "@/lib/prompt-cache";
 import type { LlmExecutionActor } from "@/dsl/provenance";
 import { SourceCorpus } from "./source-corpus";
@@ -99,13 +100,15 @@ export async function compileGroundedDsl<T>(
     const pdfEngineToUse =
       currentAttempt > 2 ? "cloudflare-ai" : configuredEngine;
 
+    const responseFormat = zodToResponseFormat(schema, schemaName);
+
     const params: ChatCompletionCreateParamsNonStreaming & {
       plugins?: readonly unknown[];
       provider?: { require_parameters?: boolean };
     } = {
       model: modelToUse,
       temperature: 0,
-      response_format: { type: "json_object" },
+      response_format: responseFormat,
       messages: conversation,
       provider: { require_parameters: true },
       ...(isPdf ? { plugins: pdfParserPlugin(pdfEngineToUse) } : {}),
@@ -151,18 +154,69 @@ export async function compileGroundedDsl<T>(
       }
     }
 
-    // Parse JSON
-    let parsedJson: any;
-    try {
-      parsedJson = JSON.parse(rawContent);
-    } catch (parseErr: any) {
-      // If markdown fenced, strip backticks
-      const stripped = rawContent.replace(/```(?:json)?/g, "").trim();
-      parsedJson = JSON.parse(stripped);
+    // Clean JSON content if wrapped in markdown code fences
+    let trimmed = rawContent.trim();
+    const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fenceMatch?.[1]) {
+      trimmed = fenceMatch[1].trim();
+    } else {
+      const firstBrace = trimmed.indexOf("{");
+      const lastBrace = trimmed.lastIndexOf("}");
+      if (firstBrace !== -1 && lastBrace > firstBrace) {
+        trimmed = trimmed.slice(firstBrace, lastBrace + 1);
+      }
     }
 
-    // Validate with Zod schema
-    const parsedData = schema.parse(parsedJson);
+    let parsedJson: any;
+    try {
+      parsedJson = JSON.parse(trimmed);
+    } catch (parseErr: any) {
+      if (currentAttempt <= maxRetries) {
+        console.warn(`[compileGroundedDsl] Pass ${currentAttempt} JSON parse failed: ${parseErr.message}`);
+        conversation.push({ role: "assistant", content: rawContent });
+        conversation.push({
+          role: "user",
+          content:
+            `[DSL COMPILER v3.0 — JSON SYNTAX ERROR]\n` +
+            `Your previous response could not be parsed as valid JSON: ${parseErr.message}\n\n` +
+            `REQUIRED ACTION:\n` +
+            `Emit ONLY a single, properly closed and escaped JSON object matching the ${schemaName} schema. Do not include markdown preamble.`,
+        });
+        continue;
+      }
+      throw parseErr;
+    }
+
+    // Validate with Zod schema with self-healing feedback
+    const parseResult = schema.safeParse(parsedJson);
+    if (!parseResult.success) {
+      if (currentAttempt <= maxRetries) {
+        const errorDetails = parseResult.error.issues
+          .map((iss) => `- Field: \`${iss.path.join(".")}\` (${iss.code}): ${iss.message}`)
+          .join("\n");
+
+        console.warn(
+          `[compileGroundedDsl] Pass ${currentAttempt} schema validation failed for '${schemaName}'. Sending schema redo turn to agent.`
+        );
+
+        conversation.push({ role: "assistant", content: rawContent });
+        conversation.push({
+          role: "user",
+          content:
+            `[DSL COMPILER v3.0 — SCHEMA VALIDATION FAILED]\n` +
+            `Your previous output violated the ${schemaName} schema definition:\n\n` +
+            `${errorDetails}\n\n` +
+            `REQUIRED ACTION:\n` +
+            `Emit a single valid JSON object strictly matching the schema:\n` +
+            `- Ensure all fields are the correct types (e.g. documentSummary must be a string, not an object; riskFlags severity must be a number 1-5; parties must have legalName as string).\n` +
+            `- Never omit required fields or invent extra wrapper objects.`,
+        });
+        continue;
+      }
+      throw parseResult.error;
+    }
+
+    const parsedData = parseResult.data;
 
     // Run the 5-Gate Deterministic Verifier across grounded fields
     const inspectedFields = inspectGroundedFields(parsedData);

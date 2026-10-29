@@ -161,9 +161,9 @@ export async function extractFromDocument(
   (parsed as unknown as { _llmActor?: LlmExecutionActor })._llmActor = compilation.llmActor;
 
   // Attach sourceFileName to all risk flags
-  parsed.riskFlags = (parsed.riskFlags ?? []).map((rf) => ({
+  parsed.riskFlags = (parsed.riskFlags ?? []).map((rf: any) => ({
     ...rf,
-    sourceFileName: rf.sourceFileName || fileName,
+    sourceFileName: rf?.sourceFileName || fileName,
   }));
 
   // Append compiler diagnostics as risk flags if any unanchored extractions occurred
