@@ -1,6 +1,6 @@
 {
   "name": "capital-sourcing-platform",
-  "version": "2.4.13",
+  "version": "3.0.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -29,6 +29,7 @@
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "tailwind-merge": "^3.7.0",
+    "unpdf": "^1.7.0",
     "xlsx": "^0.18.5",
     "zod": "^4.6.5"
   },

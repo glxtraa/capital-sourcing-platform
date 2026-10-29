@@ -11,6 +11,7 @@ import {
   type StartupInvestorStructuringDTO,
 } from "@/dsl/vc";
 import { testSourceLinks } from "@/lib/link-verifier";
+import { SourceCorpus } from "@/dsl/compiler";
 
 export const VC_RESEARCH_MODEL =
   process.env.OPENROUTER_VC_RESEARCH_MODEL ?? ONBOARDING_MODEL;
@@ -372,6 +373,27 @@ export async function structureVCInvestorFindings(
     error: v.error ?? null,
   }));
 
+  // Deterministically verify criteriaProvenance quotes against the cached web corpus
+  const webCorpus = new SourceCorpus();
+  webCorpus.addWebPages(
+    verifiedResults.map((v) => ({
+      url: v.url,
+      content: v.cachedSnippet || "",
+      status: v.status,
+      ok: v.ok,
+    })),
+    findings
+  );
+
+  const verifiedProvenance = (investorBase.criteriaProvenance || []).map((cp: any) => {
+    const src = webCorpus.getSource(cp.sourceUrl) || webCorpus.getSource("SEARCH_ENGINE_FINDINGS");
+    const quoteFound = src ? webCorpus.findQuoteAcrossSource(src, cp.verbatimQuote).found : false;
+    return {
+      ...cp,
+      quoteVerifiedInCache: quoteFound,
+    };
+  });
+
   return {
     ...investorBase,
     headquarters: sanitizeInvestorHeadquarters(investorBase.name, investorBase.headquarters, findings),
@@ -381,6 +403,7 @@ export async function structureVCInvestorFindings(
     sources: updatedSources,
     recentIndustryInvestments: updatedRecent,
     competitorInvestments: updatedCompetitors,
+    criteriaProvenance: verifiedProvenance,
     sourceLinksAudit,
   };
 }
