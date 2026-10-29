@@ -28,7 +28,7 @@ loadEnv();
 import { db } from "../src/lib/db";
 
 // Ordered from independent parent models to dependent child models for clean restore
-const MODEL_ORDER: (keyof typeof db | string)[] = [
+const MODEL_ORDER: string[] = [
   // 1. Core Global Settings & Caches
   "appSetting",
   "researchPageCache",
@@ -115,7 +115,8 @@ async function runBackup(): Promise<string> {
     data: {},
   };
 
-  for (const modelName of MODEL_ORDER) {
+  for (const rawModelName of MODEL_ORDER) {
+    const modelName = String(rawModelName);
     const delegate = (db as any)[modelName];
     if (!delegate || typeof delegate.findMany !== "function") {
       console.warn(`[WARN] Model delegate ${modelName} not found on PrismaClient, skipping.`);
@@ -169,7 +170,8 @@ async function runRestore(filePath?: string) {
   const reverseModels = [...MODEL_ORDER].reverse();
 
   console.log("\n[1/2] Purging existing records in foreign-key safe reverse order...");
-  for (const modelName of reverseModels) {
+  for (const rawModelName of reverseModels) {
+    const modelName = String(rawModelName);
     const delegate = (db as any)[modelName];
     if (!delegate || typeof delegate.deleteMany !== "function") continue;
     try {
@@ -184,7 +186,8 @@ async function runRestore(filePath?: string) {
 
   console.log("\n[2/2] Restoring records in parent-to-child order...");
   let restoredTotal = 0;
-  for (const modelName of MODEL_ORDER) {
+  for (const rawModelName of MODEL_ORDER) {
+    const modelName = String(rawModelName);
     const records = payload.data[modelName];
     if (!records || records.length === 0) continue;
 
