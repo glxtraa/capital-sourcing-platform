@@ -76,7 +76,8 @@ export async function structureTradeFunderFindings(
 
   const structureResponse = await client.chat.completions.create({
     model: RESEARCH_MODEL,
-    response_format: RESPONSE_FORMAT,
+    response_format: zodToResponseFormat(TradeFunderSchema, "TradeFunder"),
+    max_tokens: 8192,
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
       {
@@ -86,7 +87,8 @@ export async function structureTradeFunderFindings(
           (citedUrls.length > 0 ? `Citations:\n${citedUrls.join("\n")}\n\n` : "") +
           `Structure this into a complete TradeFunder entry per the schema. ` +
           `Fill every field truthfully. Do not fabricate fees or minimums. ` +
-          `Ensure the record is general to this institution and not tied to one confidential deal.`,
+          `Ensure the record is general to this institution and not tied to one confidential deal. ` +
+          `Keep excerpts and snippets concise (max 1-2 sentences, under 300 characters). Do NOT dump full web page text.`,
       },
     ],
   });

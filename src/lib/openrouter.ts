@@ -23,6 +23,8 @@ export function getOpenRouterClient(): OpenAI {
     client = new OpenAI({
       apiKey,
       baseURL: "https://openrouter.ai/api/v1",
+      timeout: 60_000,
+      maxRetries: 2,
       defaultHeaders: {
         // OpenRouter asks for these so usage shows up correctly on
         // openrouter.ai/activity and in their rate-limit accounting — not
