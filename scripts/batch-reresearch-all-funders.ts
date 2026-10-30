@@ -4,6 +4,11 @@ import { testSourceLinks } from "../src/lib/link-verifier";
 import { researchProviderFindings, structureProviderFindings } from "../src/agents/research-agent";
 import { researchTradeFunderFindings, structureTradeFunderFindings } from "../src/agents/trade/trade-research-agent";
 import { researchVCInvestorFindings, structureVCInvestorFindings } from "../src/agents/vc/vc-research-agent";
+import {
+  verifyProviderExtractionGrounding,
+  verifyTradeFunderExtractionGrounding,
+  verifyStartupInvestorExtractionGrounding,
+} from "../src/dsl/compiler/funder-verifier";
 
 resolveDatabaseUrl();
 const db = new PrismaClient();
@@ -39,6 +44,26 @@ async function main() {
         citedUrls: workingUrls,
       });
 
+      const pageTexts = linkAudit.map((l) => `${l.cachedTitle ?? ""} ${l.cachedSnippet ?? ""}`).filter(Boolean);
+      const groundingReport = verifyProviderExtractionGrounding(structured, pageTexts);
+      console.log(`  Grounded field extraction audit: ${groundingReport.groundingScorePct}% grounded (${groundingReport.verifiedCount} verified, ${groundingReport.unverifiedCount} unverified)`);
+
+      // Filter unverified items: jurisdictions or documents not found in source text
+      const verifiedSellerJur = (structured.sellerJurisdictions ?? []).filter((j) => {
+        if (!j || j.toLowerCase() === "any") return true;
+        const item = groundingReport.items.find((i) => i.field === `jurisdiction:${j}`);
+        return !item || item.status === "VERIFIED";
+      });
+      const verifiedObligorJur = (structured.obligorJurisdictions ?? []).filter((j) => {
+        if (!j || j.toLowerCase() === "any") return true;
+        const item = groundingReport.items.find((i) => i.field === `jurisdiction:${j}`);
+        return !item || item.status === "VERIFIED";
+      });
+      const verifiedDocs = (structured.documentsRequired ?? []).filter((d) => {
+        const item = groundingReport.items.find((i) => i.field === `documentRequired:${d.code}`);
+        return !item || item.status === "VERIFIED";
+      });
+
       // Ensure explicit structures and sanitize array duplicates
       let structures = uniq(structured.financingStructuresSupported);
       if (structures.length === 0 || structures.includes("UNKNOWN" as never)) {
@@ -56,17 +81,21 @@ async function main() {
         where: { id: p.id },
         data: {
           product: structured.product || p.product,
-          sellerJurisdictions: structured.sellerJurisdictions?.length ? uniq(structured.sellerJurisdictions) : p.sellerJurisdictions,
-          obligorJurisdictions: structured.obligorJurisdictions?.length ? uniq(structured.obligorJurisdictions) : p.obligorJurisdictions,
+          sellerJurisdictions: verifiedSellerJur.length ? uniq(verifiedSellerJur) : p.sellerJurisdictions,
+          obligorJurisdictions: verifiedObligorJur.length ? uniq(verifiedObligorJur) : p.obligorJurisdictions,
           currencies: structured.currencies?.length ? uniq(structured.currencies) : p.currencies,
-          minTicketUsd: structured.minTicketUsd ?? p.minTicketUsd,
-          maxTicketUsd: structured.maxTicketUsd ?? p.maxTicketUsd,
+          minTicketUsd: groundingReport.items.find((i) => i.field === "minTicketUsd")?.status === "VERIFIED" ? structured.minTicketUsd : p.minTicketUsd,
+          maxTicketUsd: groundingReport.items.find((i) => i.field === "maxTicketUsd")?.status === "VERIFIED" ? structured.maxTicketUsd : p.maxTicketUsd,
           gatingFactor: structured.gatingFactor || p.gatingFactor,
           applicationUrl: structured.applicationUrl || p.applicationUrl,
           sources: verifiedSources.length > 0 ? verifiedSources : p.sources,
           financingStructuresSupported: structures as never,
           lastVerified: new Date(),
-          confidence: workingUrls.length > 0 ? "VERIFIED_SITE" : "VERIFIED_SECONDARY",
+          confidence: workingUrls.length > 0 && groundingReport.groundingScorePct >= 60 ? "VERIFIED_SITE" : "VERIFIED_SECONDARY",
+          documentsRequired: {
+            deleteMany: {},
+            create: verifiedDocs.map((d) => ({ code: d.code, note: d.note ?? null })),
+          },
         },
       });
       console.log(`  ✓ Updated ${p.id} with ${verifiedSources.length} verified links.`);
@@ -99,6 +128,31 @@ async function main() {
         citedUrls: workingUrls,
       });
 
+      const pageTexts = linkAudit.map((l) => `${l.cachedTitle ?? ""} ${l.cachedSnippet ?? ""}`).filter(Boolean);
+      const groundingReport = verifyTradeFunderExtractionGrounding(structured, pageTexts);
+      console.log(`  Grounded field extraction audit: ${groundingReport.groundingScorePct}% grounded (${groundingReport.verifiedCount} verified, ${groundingReport.unverifiedCount} unverified)`);
+
+      const verifiedCommodities = (structured.supportedCommodities ?? []).filter((c) => {
+        const item = groundingReport.items.find((i) => i.field === `commodity:${c}`);
+        return !item || item.status === "VERIFIED";
+      });
+      const verifiedSupplierJur = (structured.acceptedSupplierJurisdictions ?? []).filter((j) => {
+        const item = groundingReport.items.find((i) => i.field === `jurisdiction:${j}`);
+        return !item || item.status === "VERIFIED";
+      });
+      const verifiedTraderJur = (structured.acceptedTraderJurisdictions ?? []).filter((j) => {
+        const item = groundingReport.items.find((i) => i.field === `jurisdiction:${j}`);
+        return !item || item.status === "VERIFIED";
+      });
+      const verifiedBuyerJur = (structured.acceptedBuyerJurisdictions ?? []).filter((j) => {
+        const item = groundingReport.items.find((i) => i.field === `jurisdiction:${j}`);
+        return !item || item.status === "VERIFIED";
+      });
+      const verifiedDocs = (structured.documentsRequired ?? []).filter((d) => {
+        const item = groundingReport.items.find((i) => i.field === `documentRequired:${d.code}`);
+        return !item || item.status === "VERIFIED";
+      });
+
       const verifiedSources = uniq([
         ...workingUrls,
         ...(structured.sources ?? []).filter((s) => workingUrls.includes(s) || s.startsWith("https://")),
@@ -109,19 +163,23 @@ async function main() {
         data: {
           supportedCorridors: structured.supportedCorridors?.length ? uniq(structured.supportedCorridors) as never : f.supportedCorridors,
           supportedLegs: structured.supportedLegs?.length ? uniq(structured.supportedLegs) as never : f.supportedLegs,
-          supportedCommodities: structured.supportedCommodities?.length ? uniq(structured.supportedCommodities) : f.supportedCommodities,
-          acceptedSupplierJurisdictions: structured.acceptedSupplierJurisdictions?.length ? uniq(structured.acceptedSupplierJurisdictions) : f.acceptedSupplierJurisdictions,
-          acceptedTraderJurisdictions: structured.acceptedTraderJurisdictions?.length ? uniq(structured.acceptedTraderJurisdictions) : f.acceptedTraderJurisdictions,
-          acceptedBuyerJurisdictions: structured.acceptedBuyerJurisdictions?.length ? uniq(structured.acceptedBuyerJurisdictions) : f.acceptedBuyerJurisdictions,
-          minTicketUsd: structured.minTicketUsd ?? f.minTicketUsd,
-          maxTicketUsd: structured.maxTicketUsd ?? f.maxTicketUsd,
+          supportedCommodities: verifiedCommodities.length ? uniq(verifiedCommodities) : f.supportedCommodities,
+          acceptedSupplierJurisdictions: verifiedSupplierJur.length ? uniq(verifiedSupplierJur) : f.acceptedSupplierJurisdictions,
+          acceptedTraderJurisdictions: verifiedTraderJur.length ? uniq(verifiedTraderJur) : f.acceptedTraderJurisdictions,
+          acceptedBuyerJurisdictions: verifiedBuyerJur.length ? uniq(verifiedBuyerJur) : f.acceptedBuyerJurisdictions,
+          minTicketUsd: groundingReport.items.find((i) => i.field === "minTicketUsd")?.status === "VERIFIED" ? structured.minTicketUsd : f.minTicketUsd,
+          maxTicketUsd: groundingReport.items.find((i) => i.field === "maxTicketUsd")?.status === "VERIFIED" ? structured.maxTicketUsd : f.maxTicketUsd,
           indicativePricingGuidance: structured.indicativePricingGuidance || f.indicativePricingGuidance,
           gatingFactor: structured.gatingFactor || f.gatingFactor,
           applicationUrl: structured.applicationUrl || f.applicationUrl,
           contact: structured.contact || f.contact,
           sources: verifiedSources.length > 0 ? verifiedSources : f.sources,
           lastVerified: new Date(),
-          confidence: workingUrls.length > 0 ? "VERIFIED_SITE" : "VERIFIED_SECONDARY",
+          confidence: workingUrls.length > 0 && groundingReport.groundingScorePct >= 60 ? "VERIFIED_SITE" : "VERIFIED_SECONDARY",
+          documentsRequired: {
+            deleteMany: {},
+            create: verifiedDocs.map((d) => ({ code: d.code, note: d.note ?? null })),
+          },
         },
       });
       console.log(`  ✓ Updated ${f.id} with ${verifiedSources.length} verified links.`);
@@ -154,6 +212,27 @@ async function main() {
         citedUrls: workingUrls,
       });
 
+      const pageTexts = linkAudit.map((l) => `${l.cachedTitle ?? ""} ${l.cachedSnippet ?? ""}`).filter(Boolean);
+      const groundingReport = verifyStartupInvestorExtractionGrounding(structured, pageTexts);
+      console.log(`  Grounded field extraction audit: ${groundingReport.groundingScorePct}% grounded (${groundingReport.verifiedCount} verified, ${groundingReport.unverifiedCount} unverified)`);
+
+      const verifiedPortcos = (structured.portfolioCompanies ?? []).filter((p) => {
+        const item = groundingReport.items.find((i) => i.field === `portfolioCompany:${p}`);
+        return !item || item.status === "VERIFIED";
+      });
+      const verifiedKeyContacts = (structured.keyContacts ?? []).filter((c) => {
+        const item = groundingReport.items.find((i) => i.field === `keyContact:${c.name}`);
+        return !item || item.status === "VERIFIED";
+      });
+      const verifiedJurisdictions = (structured.acceptedJurisdictions ?? []).filter((j) => {
+        const item = groundingReport.items.find((i) => i.field === `jurisdiction:${j}`);
+        return !item || item.status === "VERIFIED";
+      });
+      const verifiedDocs = (structured.documentsRequired ?? []).filter((d) => {
+        const item = groundingReport.items.find((i) => i.field === `documentRequired:${d.code}`);
+        return !item || item.status === "VERIFIED";
+      });
+
       const verifiedSources = uniq([
         ...workingUrls,
         ...(structured.sources ?? []).filter((s) => workingUrls.includes(s) || s.startsWith("https://")),
@@ -164,17 +243,22 @@ async function main() {
         data: {
           targetStages: structured.targetStages?.length ? uniq(structured.targetStages) as never : inv.targetStages,
           preferredSectors: structured.preferredSectors?.length ? uniq(structured.preferredSectors) as never : inv.preferredSectors,
-          acceptedJurisdictions: structured.acceptedJurisdictions?.length ? uniq(structured.acceptedJurisdictions) : inv.acceptedJurisdictions,
-          portfolioCompanies: structured.portfolioCompanies?.length ? uniq(structured.portfolioCompanies) : inv.portfolioCompanies,
-          minCheckUsd: structured.minCheckUsd ?? inv.minCheckUsd,
-          maxCheckUsd: structured.maxCheckUsd ?? inv.maxCheckUsd,
+          acceptedJurisdictions: verifiedJurisdictions.length ? uniq(verifiedJurisdictions) : inv.acceptedJurisdictions,
+          portfolioCompanies: verifiedPortcos.length ? uniq(verifiedPortcos) : inv.portfolioCompanies,
+          keyContactsJson: verifiedKeyContacts.length ? JSON.parse(JSON.stringify(verifiedKeyContacts)) : undefined,
+          minCheckUsd: groundingReport.items.find((i) => i.field === "minCheckUsd")?.status === "VERIFIED" ? structured.minCheckUsd : inv.minCheckUsd,
+          maxCheckUsd: groundingReport.items.find((i) => i.field === "maxCheckUsd")?.status === "VERIFIED" ? structured.maxCheckUsd : inv.maxCheckUsd,
           gatingFactor: structured.gatingFactor || inv.gatingFactor,
           websiteUrl: structured.websiteUrl || inv.websiteUrl,
           applicationUrl: structured.applicationUrl || inv.applicationUrl,
           sources: verifiedSources.length > 0 ? verifiedSources : inv.sources,
           sourceLinksAudit: JSON.parse(JSON.stringify(linkAudit)),
           lastVerified: new Date(),
-          confidence: workingUrls.length > 0 ? "VERIFIED_SITE" : "VERIFIED_SECONDARY",
+          confidence: workingUrls.length > 0 && groundingReport.groundingScorePct >= 60 ? "VERIFIED_SITE" : "VERIFIED_SECONDARY",
+          documentsRequired: {
+            deleteMany: {},
+            create: verifiedDocs.map((d) => ({ code: d.code, note: d.note ?? null })),
+          },
         },
       });
       console.log(`  ✓ Updated ${inv.id} with ${verifiedSources.length} verified links.`);
