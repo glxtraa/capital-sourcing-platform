@@ -8,6 +8,8 @@ import {
 import { matchStartupDeal } from "@/lib/vc-matching";
 import { reconcileStartupExtractions } from "@/agents/vc/vc-reconciliation";
 import { researchStartupCompetitors } from "@/agents/vc/vc-competitor-agent";
+import { testSourceLinks } from "@/lib/link-verifier";
+import { gateStartupInvestor } from "@/dsl/compiler";
 import type { StartupDocumentExtraction, StartupInvestorDTO } from "@/dsl/vc";
 
 function cleanJson<T>(value: T): T {
@@ -232,7 +234,24 @@ export async function POST(
         });
       }
 
-      const sanitized = sanitizeInvestorData(investor);
+      // Audit cited URLs and apply strict DSL grounding gate
+      const investorKeywords = [investor.name, investor.id.split("-")[0]].filter(Boolean);
+      const linkAudit = body.citedUrls.length > 0
+        ? await testSourceLinks(body.citedUrls, 5, 4000, { requiredKeywords: investorKeywords })
+        : [];
+      const workingUrls = linkAudit.filter((l) => l.ok).map((l) => l.url);
+      const pageTexts = linkAudit.map((l) => `${l.cachedTitle ?? ""} ${l.cachedSnippet ?? ""}`).filter(Boolean);
+
+      const gateResult = gateStartupInvestor(
+        { ...investor, sources: workingUrls.length > 0 ? workingUrls : investor.sources },
+        pageTexts
+      );
+
+      if (!gateResult.passed || !gateResult.cleanData) {
+        throw new Error(gateResult.error || "Failed DSL grounding gate audit.");
+      }
+
+      const sanitized = sanitizeInvestorData(gateResult.cleanData);
       const docsReq = Array.isArray(investor.documentsRequired) ? investor.documentsRequired : [];
 
       await db.startupInvestor.upsert({
@@ -331,7 +350,24 @@ export async function POST(
       });
     }
 
-    const sanitized = sanitizeInvestorData(investor);
+    // Audit cited URLs and apply strict DSL grounding gate
+    const investorKeywords = [investor.name, investor.id.split("-")[0]].filter(Boolean);
+    const linkAudit = citedUrls.length > 0
+      ? await testSourceLinks(citedUrls, 5, 4000, { requiredKeywords: investorKeywords })
+      : [];
+    const workingUrls = linkAudit.filter((l) => l.ok).map((l) => l.url);
+    const pageTexts = linkAudit.map((l) => `${l.cachedTitle ?? ""} ${l.cachedSnippet ?? ""}`).filter(Boolean);
+
+    const gateResult = gateStartupInvestor(
+      { ...investor, sources: workingUrls.length > 0 ? workingUrls : investor.sources },
+      pageTexts
+    );
+
+    if (!gateResult.passed || !gateResult.cleanData) {
+      throw new Error(gateResult.error || "Failed DSL grounding gate audit.");
+    }
+
+    const sanitized = sanitizeInvestorData(gateResult.cleanData);
     const docsReq = Array.isArray(investor.documentsRequired) ? investor.documentsRequired : [];
 
     await db.startupInvestor.upsert({

@@ -5,6 +5,8 @@ import {
   researchTradeFunderFindings,
   structureTradeFunderFindings,
 } from "@/agents/trade/trade-research-agent";
+import { testSourceLinks } from "@/lib/link-verifier";
+import { gateTradeFunder } from "@/dsl/compiler";
 
 export const maxDuration = 300;
 
@@ -95,11 +97,30 @@ export async function POST(
   }
 
   try {
-    const funder = await structureTradeFunderFindings(body.hint, {
+    const rawFunder = await structureTradeFunderFindings(body.hint, {
       findings: body.findings,
       citedUrls: body.citedUrls,
     });
 
+    // 1. Audit and verify source links with keyword grounding
+    const funderKeywords = [rawFunder.name, rawFunder.id.split("-")[0]].filter(Boolean);
+    const linkAudit = body.citedUrls.length > 0
+      ? await testSourceLinks(body.citedUrls, 5, 4000, { requiredKeywords: funderKeywords })
+      : [];
+    const workingUrls = linkAudit.filter((l) => l.ok).map((l) => l.url);
+    const pageTexts = linkAudit.map((l) => `${l.cachedTitle ?? ""} ${l.cachedSnippet ?? ""}`).filter(Boolean);
+
+    // 2. Strict DSL Grounding Gate: verify all extracted data against cited source pages
+    const gateResult = gateTradeFunder(
+      { ...rawFunder, sources: workingUrls.length > 0 ? workingUrls : rawFunder.sources },
+      pageTexts
+    );
+
+    if (!gateResult.passed || !gateResult.cleanData) {
+      throw new Error(gateResult.error || "Failed DSL grounding gate audit.");
+    }
+
+    const funder = gateResult.cleanData;
     const lastVerified = funder.lastVerified ? new Date(funder.lastVerified) : new Date();
 
     await db.tradeFunder.upsert({

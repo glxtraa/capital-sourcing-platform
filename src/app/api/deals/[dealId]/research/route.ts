@@ -3,6 +3,8 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { buildMatchInputs } from "@/lib/matching";
 import { researchProviderFindings, structureProviderFindings } from "@/agents/research-agent";
+import { testSourceLinks } from "@/lib/link-verifier";
+import { gateInvoiceProvider } from "@/dsl/compiler";
 
 /**
  * One step of "research a new provider because matching found none", per
@@ -94,10 +96,30 @@ export async function POST(req: Request, { params }: { params: Promise<{ dealId:
   }
 
   try {
-    const provider = await structureProviderFindings(body.hint, {
+    const rawProvider = await structureProviderFindings(body.hint, {
       findings: body.findings,
       citedUrls: body.citedUrls,
     });
+
+    // 1. Audit and verify source links with keyword grounding
+    const entityKeywords = [rawProvider.name, rawProvider.id.split("-")[0]].filter(Boolean);
+    const linkAudit = body.citedUrls.length > 0
+      ? await testSourceLinks(body.citedUrls, 5, 4000, { requiredKeywords: entityKeywords })
+      : [];
+    const workingUrls = linkAudit.filter((l) => l.ok).map((l) => l.url);
+    const pageTexts = linkAudit.map((l) => `${l.cachedTitle ?? ""} ${l.cachedSnippet ?? ""}`).filter(Boolean);
+
+    // 2. Strict DSL Grounding Gate: verify all extracted data against cited source pages
+    const gateResult = gateInvoiceProvider(
+      { ...rawProvider, sources: workingUrls.length > 0 ? workingUrls : rawProvider.sources },
+      pageTexts
+    );
+
+    if (!gateResult.passed || !gateResult.cleanData) {
+      throw new Error(gateResult.error || "Failed DSL grounding gate audit.");
+    }
+
+    const provider = gateResult.cleanData;
     const lastVerified = provider.lastVerified ? new Date(provider.lastVerified) : null;
     await db.provider.upsert({
       where: { id: provider.id },
@@ -112,7 +134,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ dealId:
       where: { id: run.id },
       data: {
         status: "SUCCEEDED",
-        outputSummary: `Added/updated provider "${provider.name}" (${provider.id}).`,
+        outputSummary: `Added/updated provider "${provider.name}" (${provider.id}) [${gateResult.report.groundingScorePct}% grounded].`,
         finishedAt: new Date(),
       },
     });
