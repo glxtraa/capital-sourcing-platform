@@ -123,15 +123,37 @@ export function TradeUploadDropzone({
         documentIds.push(doc.id);
       }
 
-      // 2. Sequential extraction
+      // 2. Sequential extraction with connection-drop recovery
       for (let i = 0; i < documentIds.length; i++) {
         setProgress(`Extracting trade metadata: ${files[i].name} (${i + 1}/${documentIds.length})…`);
-        const extractRes = await fetch(`/api/trade-deals/${dealId}/documents/${documentIds[i]}/extract`, {
-          method: "POST",
-        });
-        if (!extractRes.ok) {
-          const body = await extractRes.json().catch(() => ({}));
-          throw new Error(body.error ?? `Extraction failed for ${files[i].name}`);
+        try {
+          const extractRes = await fetch(`/api/trade-deals/${dealId}/documents/${documentIds[i]}/extract`, {
+            method: "POST",
+          });
+          if (!extractRes.ok) {
+            const body = await extractRes.json().catch(() => ({}));
+            throw new Error(body.error ?? `Extraction failed for ${files[i].name}`);
+          }
+        } catch (fetchErr) {
+          setProgress(`Verifying extraction status for ${files[i].name}…`);
+          let recovered = false;
+          const start = Date.now();
+          while (Date.now() - start < 45000) {
+            await new Promise((r) => setTimeout(r, 3000));
+            try {
+              const checkRes = await fetch(`/api/trade-deals/${dealId}/documents/${documentIds[i]}`);
+              if (checkRes.ok) {
+                const doc = await checkRes.json();
+                if (doc && doc.extractedRaw != null) {
+                  recovered = true;
+                  break;
+                }
+              }
+            } catch {
+              // ignore transient polling error
+            }
+          }
+          if (!recovered) throw fetchErr;
         }
       }
 

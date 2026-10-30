@@ -228,11 +228,28 @@ export function VcUploadDropzone({
       // 2. Extract Document Metadata (Always run for ingested files)
       for (let i = 0; i < registeredDocIds.length; i++) {
         setProgress(`AI extracting startup data: Doc ${i + 1}/${registeredDocIds.length}…`);
-        const extractRes = await fetch(`/api/vc-deals/${dealId}/documents/${registeredDocIds[i]}/extract`, {
-          method: "POST",
-        });
-        if (!extractRes.ok) {
-          console.warn(`Extraction notice on doc ${registeredDocIds[i]}`);
+        try {
+          const extractRes = await fetch(`/api/vc-deals/${dealId}/documents/${registeredDocIds[i]}/extract`, {
+            method: "POST",
+          });
+          if (!extractRes.ok) {
+            console.warn(`Extraction notice on doc ${registeredDocIds[i]}`);
+          }
+        } catch {
+          setProgress(`Verifying extraction status for Doc ${i + 1}/${registeredDocIds.length}…`);
+          const start = Date.now();
+          while (Date.now() - start < 45000) {
+            await new Promise((r) => setTimeout(r, 3000));
+            try {
+              const checkRes = await fetch(`/api/vc-deals/${dealId}/documents/${registeredDocIds[i]}`);
+              if (checkRes.ok) {
+                const doc = await checkRes.json();
+                if (doc && doc.extractedRaw != null) break;
+              }
+            } catch {
+              // ignore
+            }
+          }
         }
       }
 

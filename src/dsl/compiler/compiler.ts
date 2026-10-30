@@ -60,7 +60,7 @@ export async function compileGroundedDsl<T>(
     agentPersona,
     model = EXTRACTION_MODEL,
     isPdf = false,
-    maxRetries = 2,
+    maxRetries = isPdf ? 1 : 2,
     inspectGroundedFields,
     nullifyUnverifiedField,
   } = options;
@@ -93,9 +93,39 @@ export async function compileGroundedDsl<T>(
     currentAttempt++;
 
     const modelToUse =
-      currentAttempt > 2
+      currentAttempt >= 2
         ? "google/gemini-2.5-flash"
         : model;
+
+    // On retry turns (currentAttempt >= 2), strip base64 file attachments if local/OCR text
+    // is already available in the corpus so OpenRouter does not re-run 30-50s OCR on every retry!
+    let messagesToSend = conversation;
+    let sendPdfPlugin = isPdf;
+    if (currentAttempt >= 2 && isPdf) {
+      const existingPdfText = corpus
+        .listSources()
+        .map((ref) => corpus.getSource(ref))
+        .filter((s) => s && s.fullText && s.fullText.trim().length > 100)
+        .map((s) => `### SOURCE DOCUMENT TEXT (${s!.sourceRef}):\n${s!.fullText}`)
+        .join("\n\n");
+
+      if (existingPdfText.length > 100) {
+        sendPdfPlugin = false;
+        messagesToSend = conversation.map((msg) => {
+          if (msg.role === "user" && Array.isArray(msg.content)) {
+            const textParts = msg.content
+              .filter((part: any) => part.type === "text")
+              .map((part: any) => part.text)
+              .join("\n\n");
+            return {
+              role: "user",
+              content: `${textParts}\n\n${existingPdfText}`,
+            } as ChatCompletionMessageParam;
+          }
+          return msg;
+        });
+      }
+    }
 
     const pdfEngineToUse =
       currentAttempt > 2 ? "cloudflare-ai" : configuredEngine;
@@ -109,9 +139,9 @@ export async function compileGroundedDsl<T>(
       model: modelToUse,
       temperature: 0,
       response_format: responseFormat,
-      messages: conversation,
+      messages: messagesToSend,
       provider: { require_parameters: true },
-      ...(isPdf ? { plugins: pdfParserPlugin(pdfEngineToUse) } : {}),
+      ...(sendPdfPlugin ? { plugins: pdfParserPlugin(pdfEngineToUse) } : {}),
     };
 
     const startTime = Date.now();

@@ -306,8 +306,10 @@ export class SourceCorpus {
 
     const loc = locationStr.trim().toLowerCase();
 
-    // 1. PDF Page or Slide (e.g. "Page 4", "Slide 4", "p. 4", "p.4", "Page 4, Clause 1.2")
-    const pageMatch = loc.match(/(?:page|slide|p\.?)\s*(\d+)/i);
+    // 1. PDF Page or Slide (e.g. "Page 4", "Slide 4", "p. 4", "p.4", "Page 4, Clause 1.2", or bare "4")
+    const pageMatch =
+      loc.match(/(?:page|slide|p\.?)\s*(\d+)/i) ||
+      (source.sourceType === "PDF" ? loc.match(/^(\d+)(?:\s*[,;(-].*)?$/) : null);
     if (pageMatch) {
       const pageNum = parseInt(pageMatch[1], 10);
       const match = source.slices.find((s) => s.pageNumber === pageNum);

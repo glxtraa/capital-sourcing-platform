@@ -86,6 +86,29 @@ async function readAllEntriesFromDirectory(entry: FileSystemEntry): Promise<File
  *      step. Only once it resolves does this component navigate to the
  *      deal page.
  */
+async function waitForDocumentExtraction(
+  dealId: string,
+  documentId: string,
+  maxWaitMs = 45000,
+): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    await new Promise((r) => setTimeout(r, 3000));
+    try {
+      const checkRes = await fetch(`/api/deals/${dealId}/documents/${documentId}`);
+      if (checkRes.ok) {
+        const doc = await checkRes.json();
+        if (doc && doc.extractedFieldsRaw != null) {
+          return true;
+        }
+      }
+    } catch {
+      // ignore transient network errors while polling
+    }
+  }
+  return false;
+}
+
 export function UploadDropzone({ existingDealId }: { existingDealId?: string } = {}) {
   const router = useRouter();
   const [dealName, setDealName] = useState("");
@@ -203,12 +226,24 @@ export function UploadDropzone({ existingDealId }: { existingDealId?: string } =
       for (let i = 0; i < documentIds.length; i++) {
         if (doneSet.has(documentIds[i])) continue;
         setProgress(`Extracting ${files[i].name} (${i + 1}/${documentIds.length})…`);
-        const extractOneRes = await fetch(`/api/deals/${dealId}/documents/${documentIds[i]}/extract`, {
-          method: "POST",
-        });
-        if (!extractOneRes.ok) {
-          const body = await extractOneRes.json().catch(() => ({}));
-          throw new Error(body.error ?? `Extraction failed for ${files[i].name}.`);
+        try {
+          const extractOneRes = await fetch(`/api/deals/${dealId}/documents/${documentIds[i]}/extract`, {
+            method: "POST",
+          });
+          if (!extractOneRes.ok) {
+            const body = await extractOneRes.json().catch(() => ({}));
+            const recovered = await waitForDocumentExtraction(dealId, documentIds[i], 30000);
+            if (!recovered) {
+              throw new Error(body.error ?? `Extraction failed for ${files[i].name}.`);
+            }
+          }
+        } catch (fetchErr) {
+          // If browser connection dropped (TypeError: Failed to fetch) while serverless function is still finishing
+          setProgress(`Verifying extraction status for ${files[i].name}…`);
+          const recovered = await waitForDocumentExtraction(dealId, documentIds[i], 45000);
+          if (!recovered) {
+            throw fetchErr;
+          }
         }
         doneSet.add(documentIds[i]);
         setExtractedDocIds(new Set(doneSet));
