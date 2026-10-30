@@ -23,6 +23,13 @@ export interface VerifiedSourceLink {
   cachedPageId?: string;
   cachedTitle?: string;
   cachedSnippet?: string;
+  cachedContent?: string;
+  keywordVerification?: {
+    requiredKeywords: string[];
+    matchedKeywords: string[];
+    missingKeywords: string[];
+    passesGrounding: boolean;
+  };
 }
 
 const REALISTIC_HEADERS = {
@@ -117,7 +124,7 @@ async function performHttpRequest(url: string, timeoutMs: number): Promise<{ res
 export async function testSourceLink(
   rawUrl: string,
   timeoutMs = 6000,
-  options: { cachePage?: boolean } = { cachePage: true },
+  options: { cachePage?: boolean; requiredKeywords?: string[] } = { cachePage: true },
 ): Promise<VerifiedSourceLink> {
   const normalized = normalizeUrl(rawUrl);
   const start = Date.now();
@@ -153,7 +160,7 @@ export async function testSourceLink(
     // Strictly 2xx and 3xx (which redirect: follow resolves) are considered OK,
     // plus LinkedIn's standard HTTP 999 anti-scraping status on valid profile routes.
     const isLinkedIn999 = res.status === 999 && normalized.includes("linkedin.com/");
-    const ok = (res.status >= 200 && res.status < 400) || isLinkedIn999;
+    let ok = (res.status >= 200 && res.status < 400) || isLinkedIn999;
     const contentType = res.headers.get("content-type") ?? undefined;
 
     // If the check failed (e.g. 403 / 404 / 410) on a primary domain root,
@@ -198,6 +205,8 @@ export async function testSourceLink(
     let cachedPageId: string | undefined = undefined;
     let cachedTitle: string | undefined = undefined;
     let cachedSnippet: string | undefined = undefined;
+    let cachedContent: string | undefined = undefined;
+    let keywordVerification: VerifiedSourceLink["keywordVerification"] = undefined;
 
     if ((ok || resolvedWorkingUrl || normalized.includes("linkedin.com/")) && options.cachePage !== false) {
       const targetCacheUrl = resolvedWorkingUrl || normalized;
@@ -206,6 +215,37 @@ export async function testSourceLink(
         cachedPageId = cached.id;
         cachedTitle = cached.title ?? undefined;
         cachedSnippet = cached.snippet ?? undefined;
+        cachedContent = cached.content;
+      }
+    }
+
+    // Verify grounding keywords against cached page content and title
+    if (options.requiredKeywords && options.requiredKeywords.length > 0) {
+      const searchSpace = `${cachedTitle ?? ""} ${cachedSnippet ?? ""} ${cachedContent ?? ""}`.toLowerCase();
+      const matchedKeywords: string[] = [];
+      const missingKeywords: string[] = [];
+
+      for (const kw of options.requiredKeywords) {
+        const cleanKw = kw.toLowerCase().trim();
+        if (!cleanKw) continue;
+        if (searchSpace.includes(cleanKw)) {
+          matchedKeywords.push(kw);
+        } else {
+          missingKeywords.push(kw);
+        }
+      }
+
+      const passesGrounding = missingKeywords.length === 0 || matchedKeywords.length > 0;
+      keywordVerification = {
+        requiredKeywords: options.requiredKeywords,
+        matchedKeywords,
+        missingKeywords,
+        passesGrounding,
+      };
+
+      // If page is reachable but completely fails to contain the required person / entity name, flag grounding failure
+      if (ok && searchSpace.trim().length > 100 && matchedKeywords.length === 0 && options.requiredKeywords.length > 0) {
+        ok = false;
       }
     }
 
@@ -221,7 +261,8 @@ export async function testSourceLink(
       cachedPageId,
       cachedTitle,
       cachedSnippet,
-      error: ok ? undefined : `HTTP ${res.status} ${res.statusText || ""}`.trim(),
+      keywordVerification,
+      error: ok ? undefined : (keywordVerification && !keywordVerification.passesGrounding ? `Page reached (HTTP ${res.status}) but failed ground verification: missing keywords [${keywordVerification.missingKeywords.join(", ")}]` : `HTTP ${res.status} ${res.statusText || ""}`.trim()),
     };
   }
 
@@ -274,7 +315,7 @@ export async function testSourceLinks(
   urls: string[],
   concurrency = 5,
   timeoutMs = 6000,
-  options: { cachePages?: boolean } = { cachePages: true },
+  options: { cachePages?: boolean; requiredKeywords?: string[] } = { cachePages: true },
 ): Promise<VerifiedSourceLink[]> {
   const uniqueUrls = Array.from(new Set(urls.filter((u) => Boolean(u && typeof u === "string"))));
   if (uniqueUrls.length === 0) return [];
@@ -286,7 +327,10 @@ export async function testSourceLinks(
     while (queue.length > 0) {
       const url = queue.shift();
       if (!url) break;
-      const verified = await testSourceLink(url, timeoutMs, { cachePage: options.cachePages !== false });
+      const verified = await testSourceLink(url, timeoutMs, {
+        cachePage: options.cachePages !== false,
+        requiredKeywords: options.requiredKeywords,
+      });
       results.push(verified);
     }
   }
