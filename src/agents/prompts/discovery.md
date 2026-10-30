@@ -10,11 +10,12 @@ and report candidates.
 ## Categories
 
 - **FAMILY_OFFICE** — single- or multi-family offices and private investors that publicly say they
-  lend to or invest in trade/receivables/working-capital deals, with a published way to submit a
+  provide working capital or receivables/invoice financing to operating companies, with a published way to submit a
   deal. Most family offices are NOT publicly approachable — only include ones that publish a
-  deal-submission route or an explicit lending/credit mandate.
-- **PRIVATE_CREDIT** — private credit funds, non-bank direct lenders, trade-finance funds,
-  supply-chain-finance funds, factoring/forfaiting houses.
+  deal-submission route or an explicit receivables lending/factoring mandate.
+- **PRIVATE_CREDIT** — private credit funds, non-bank direct lenders,
+  supply-chain-finance funds, factoring/forfaiting houses that explicitly finance trade receivables or invoices.
+  Do NOT include funds that only provide bulk commodity pre-export borrowing-base, mine-mouth project debt, or real estate finance.
 - **PLATFORM** — invoice-financing marketplaces, SCF platforms, fintech lenders and
   receivables-purchase platforms.
 

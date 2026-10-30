@@ -139,26 +139,28 @@ export function matchProvider(
     funderSide: resolveFunderCriterionProvenance(provider, "ticketSize"),
   });
 
-  const structureUnreviewed = provider.financingStructuresSupported.length === 0;
+  // A provider must explicitly support the requested structure.
+  // Unreviewed or empty structure arrays are treated as unconfirmed/ineligible for this structure.
+  const structureSpecified = provider.financingStructuresSupported.length > 0;
   const structureOk =
-    structureUnreviewed || // not yet reviewed for this field — don't fail on it
+    structureSpecified &&
     provider.financingStructuresSupported.includes(ask.structureType as never);
   if (!structureOk) {
     reasons.push(
-      `provider's known financing_structures_supported does not include ${ask.structureType} — ` +
-        `re-check the provider's actual product description before ruling this out entirely, ` +
-        `this field is known-incomplete for older entries`,
+      structureSpecified
+        ? `provider's known financing_structures_supported does not include ${ask.structureType}`
+        : `provider's supported financing structures are not confirmed for ${ask.structureType}`,
     );
   }
   criteria.push({
     key: "financingStructure",
     label: "Financing structure",
-    status: structureUnreviewed ? "warning" : structureOk ? "pass" : "fail",
-    detail: structureUnreviewed
-      ? "provider's financing_structures_supported not yet reviewed for this field — don't assume support or exclusion either way"
-      : structureOk
-        ? `supports ${String(ask.structureType).replaceAll("_", " ")}`
-        : `known financing_structures_supported does not include ${String(ask.structureType).replaceAll("_", " ")} — re-check the provider's actual product description before ruling this out entirely`,
+    status: structureOk ? "pass" : "fail",
+    detail: structureOk
+      ? `supports ${String(ask.structureType).replaceAll("_", " ")}`
+      : structureSpecified
+        ? `known financing_structures_supported does not include ${String(ask.structureType).replaceAll("_", " ")}`
+        : `provider's supported financing structures are not verified for ${String(ask.structureType).replaceAll("_", " ")}`,
     funderSide: resolveFunderCriterionProvenance(provider, "financingStructure"),
   });
 

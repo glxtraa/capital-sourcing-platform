@@ -15,22 +15,23 @@ function cleanJson<T>(value: T): T {
 }
 
 function sanitizeInvestorData(investor: StartupInvestorDTO) {
+  const uniq = <T>(arr: T[] | undefined | null): T[] => Array.from(new Set(arr ?? []));
   return {
     id: investor.id,
     name: investor.name,
     type: investor.type,
-    targetStages: investor.targetStages ?? [],
-    preferredSectors: investor.preferredSectors ?? [],
-    excludedSectors: investor.excludedSectors ?? [],
+    targetStages: uniq(investor.targetStages),
+    preferredSectors: uniq(investor.preferredSectors),
+    excludedSectors: uniq(investor.excludedSectors),
     minCheckUsd: investor.minCheckUsd ?? null,
     maxCheckUsd: investor.maxCheckUsd ?? null,
     sweetSpotCheckUsd: investor.sweetSpotCheckUsd ?? null,
     leadsRounds: Boolean(investor.leadsRounds),
     takesBoardSeats: Boolean(investor.takesBoardSeats),
     targetOwnershipPct: investor.targetOwnershipPct ?? null,
-    acceptedJurisdictions: investor.acceptedJurisdictions ?? [],
+    acceptedJurisdictions: uniq(investor.acceptedJurisdictions),
     minArrUsd: investor.minArrUsd ?? null,
-    portfolioCompanies: investor.portfolioCompanies ?? [],
+    portfolioCompanies: uniq(investor.portfolioCompanies),
     activelyFundingIndustry: Boolean(investor.activelyFundingIndustry),
     recentIndustryInvestments: cleanJson(investor.recentIndustryInvestments ?? []),
     competitorInvestments: cleanJson(investor.competitorInvestments ?? []),
@@ -42,7 +43,7 @@ function sanitizeInvestorData(investor: StartupInvestorDTO) {
     applicationRoute: investor.applicationRoute ?? "WARM_INTRO",
     applicationUrl: investor.applicationUrl ?? null,
     confidence: investor.confidence ?? "VERIFIED_SECONDARY",
-    sources: investor.sources ?? [],
+    sources: uniq(investor.sources),
     notes: investor.notes ?? null,
     contactEmail: investor.contactEmail ?? null,
     headquarters: investor.headquarters ?? null,
@@ -210,6 +211,27 @@ export async function POST(
         citedUrls: body.citedUrls,
       });
 
+      // Filter out non-VC / non-startup equity organizations (DFIs, sovereign grant funds, commercial real estate developers)
+      const nonVCPattern = /does not invest in (?:startups|equity|early-stage)|only (?:funds large-scale infrastructure|provides grants to non-profit|engaged in commercial real estate)/i;
+      const gatingNotes = `${investor.gatingFactor || ""} ${investor.notes || ""}`;
+      if (nonVCPattern.test(gatingNotes) || (investor.targetStages && investor.targetStages.length === 0)) {
+        await db.startupResearchRun.update({
+          where: { id: run.id },
+          data: {
+            status: "SUCCEEDED",
+            outputSummary: `Researched "${investor.name}", but identified as ineligible non-VC / sovereign grant / real-estate fund. Not added to startup investor catalog.`,
+            finishedAt: new Date(),
+          },
+        });
+        await db.startupDeal.update({ where: { id: dealId }, data: { status: "READY_TO_MATCH" } });
+        return NextResponse.json({
+          investorId: null,
+          investorName: investor.name,
+          excludedNonVC: true,
+          reason: investor.gatingFactor || "Entity does not invest in startups or venture rounds.",
+        });
+      }
+
       const sanitized = sanitizeInvestorData(investor);
       const docsReq = Array.isArray(investor.documentsRequired) ? investor.documentsRequired : [];
 
@@ -286,6 +308,29 @@ export async function POST(
 
     // 2. Structure
     const investor = await structureVCInvestorFindings(hint, { findings, citedUrls });
+
+    const nonVCPattern = /does not invest in (?:startups|equity|early-stage)|only (?:funds large-scale infrastructure|provides grants to non-profit|engaged in commercial real estate)/i;
+    const gatingNotes = `${investor.gatingFactor || ""} ${investor.notes || ""}`;
+    if (nonVCPattern.test(gatingNotes) || (investor.targetStages && investor.targetStages.length === 0)) {
+      await db.startupResearchRun.update({
+        where: { id: run.id },
+        data: {
+          status: "SUCCEEDED",
+          outputSummary: `Researched "${investor.name}", but identified as ineligible non-VC / sovereign grant / real-estate fund. Not added to startup investor catalog.`,
+          finishedAt: new Date(),
+        },
+      });
+      await db.startupDeal.update({ where: { id: dealId }, data: { status: "READY_TO_MATCH" } });
+      return NextResponse.json({
+        ok: true,
+        investorId: null,
+        investorName: investor.name,
+        excludedNonVC: true,
+        findings,
+        citedUrls,
+      });
+    }
+
     const sanitized = sanitizeInvestorData(investor);
     const docsReq = Array.isArray(investor.documentsRequired) ? investor.documentsRequired : [];
 
