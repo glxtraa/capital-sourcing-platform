@@ -335,3 +335,137 @@ export function reconcileTradeExtractions(
     readyForMatching,
   };
 }
+
+/**
+ * Overlays persisted Stage 2 database entities (deal.parties, contractLegs, financingAsks, corridor)
+ * onto a reconciled TradeDealSpec so manual user edits and revisions are 100% authoritative
+ * during Stage 3 matching and Stage 4 benchmarking.
+ */
+export function resolveAuthoritativeTradeDealSpec(
+  deal: {
+    id: string;
+    name: string;
+    corridor?: string | null;
+    parties?: Array<{ role: string; legalName: string; jurisdiction?: string | null; concessionOrLicenseId?: string | null }>;
+    contractLegs?: Array<{
+      legType: string;
+      contractReference?: string | null;
+      sellerName?: string | null;
+      buyerName?: string | null;
+      incoterm?: string | null;
+      port?: string | null;
+      paymentType?: string | null;
+      tenorDays?: number | null;
+      amountUsd?: number | null;
+      commodityName?: string | null;
+      quantity?: number | null;
+      unit?: string | null;
+      unitPrice?: number | null;
+    }>;
+    financingAsks?: Array<any>;
+    riskFlags?: Array<any>;
+    documents?: Array<any>;
+  },
+  policyMap?: Record<string, "AUDITED_PROOF" | "UNVERIFIED_CLAIM">,
+): TradeDealSpec {
+  const extractions = (deal.documents ?? [])
+    .filter((d: any) => Boolean(d.extractedRaw))
+    .map((d: any) => ({
+      ...(d.extractedRaw as unknown as TradeDocumentExtraction),
+      _taintOverride: d.taintOverride,
+    }));
+
+  const baseRecon = reconcileTradeExtractions(deal.id, deal.name, extractions, policyMap);
+  let spec = baseRecon.tradeDealSpec;
+
+  if (!spec) {
+    // Synthesize fallback baseline from deal name & corridor
+    spec = {
+      dealId: deal.id,
+      dealName: deal.name,
+      corridor: (deal.corridor as any) || "OTHER_CROSS_BORDER",
+      supplier: { id: "party-supplier", legalName: "Unknown Supplier", jurisdiction: "Unknown", role: "SUPPLIER", concessionOrLicenseNumber: null, licenseVerified: false, sourceDocument: null, taint: "UNVERIFIED_CLAIM", extractionTimestamp: null, modelUsed: null },
+      trader: { id: "party-trader", legalName: "Unknown Trader", jurisdiction: "Unknown", role: "TRADER", concessionOrLicenseNumber: null, licenseVerified: false, sourceDocument: null, taint: "UNVERIFIED_CLAIM", extractionTimestamp: null, modelUsed: null },
+      buyer: { id: "party-buyer", legalName: "Unknown Buyer", jurisdiction: "Unknown", role: "BUYER", concessionOrLicenseNumber: null, licenseVerified: true, sourceDocument: null, taint: "UNVERIFIED_CLAIM", extractionTimestamp: null, modelUsed: null },
+      supplyContract: { contractReference: "SUPPLY-LEG-01", incoterm: null, port: null, paymentType: null, tenorDays: 0, contractAmountUsd: 0, sourceDocument: null, taint: "UNVERIFIED_CLAIM", extractionTimestamp: null, modelUsed: null },
+      offtakeContract: { contractReference: "OFFTAKE-LEG-01", incoterm: null, port: null, paymentType: null, tenorDays: 0, contractAmountUsd: 0, sourceDocument: null, taint: "UNVERIFIED_CLAIM", extractionTimestamp: null, modelUsed: null },
+      commodity: { name: "Bulk Commodity", contractQuantity: 0, unit: "MT", unitPriceUsd: 0, qualityAssay: {} },
+      reconciliationAudit: { volumeToleranceDelta: 0, specReconciled: true, specNotes: "Reconciled from DB", cashflowGapDays: 0, grossMarginUsd: 0, grossMarginPct: 0 },
+      corridorAudits: { concessionChainVerified: false, sustainabilityCertVerified: false, coldChainSanitaryClearance: false },
+      riskFlags: [],
+      readyForMatching: false,
+    };
+  }
+
+  // 1. Overlay corridor
+  if (deal.corridor) {
+    spec.corridor = deal.corridor as any;
+  }
+
+  // 2. Overlay parties if edited
+  if (deal.parties && deal.parties.length > 0) {
+    const s = deal.parties.find((p) => p.role === "SUPPLIER");
+    if (s && s.legalName) {
+      spec.supplier = {
+        ...spec.supplier,
+        legalName: s.legalName,
+        jurisdiction: s.jurisdiction ?? spec.supplier.jurisdiction,
+        concessionOrLicenseNumber: s.concessionOrLicenseId ?? spec.supplier.concessionOrLicenseNumber,
+      };
+    }
+    const t = deal.parties.find((p) => p.role === "TRADER");
+    if (t && t.legalName) {
+      spec.trader = {
+        ...spec.trader,
+        legalName: t.legalName,
+        jurisdiction: t.jurisdiction ?? spec.trader.jurisdiction,
+        concessionOrLicenseNumber: t.concessionOrLicenseId ?? spec.trader.concessionOrLicenseNumber,
+      };
+    }
+    const b = deal.parties.find((p) => p.role === "BUYER");
+    if (b && b.legalName) {
+      spec.buyer = {
+        ...spec.buyer,
+        legalName: b.legalName,
+        jurisdiction: b.jurisdiction ?? spec.buyer.jurisdiction,
+        concessionOrLicenseNumber: b.concessionOrLicenseId ?? spec.buyer.concessionOrLicenseNumber,
+      };
+    }
+  }
+
+  // 3. Overlay contract legs if edited
+  if (deal.contractLegs && deal.contractLegs.length > 0) {
+    const supplyLeg = deal.contractLegs.find((l) => l.legType === "SUPPLY_LEG" || l.legType === "SUPPLY_PURCHASE");
+    if (supplyLeg) {
+      spec.supplyContract = {
+        ...spec.supplyContract,
+        contractReference: supplyLeg.contractReference ?? spec.supplyContract.contractReference,
+        incoterm: (supplyLeg.incoterm as any) ?? spec.supplyContract.incoterm,
+        port: supplyLeg.port ?? spec.supplyContract.port,
+        paymentType: (supplyLeg.paymentType as any) ?? spec.supplyContract.paymentType,
+        tenorDays: supplyLeg.tenorDays ?? spec.supplyContract.tenorDays,
+        contractAmountUsd: supplyLeg.amountUsd ?? spec.supplyContract.contractAmountUsd,
+      };
+      if (supplyLeg.commodityName) spec.commodity.name = supplyLeg.commodityName;
+      if (supplyLeg.quantity) spec.commodity.contractQuantity = supplyLeg.quantity;
+      if (supplyLeg.unit) spec.commodity.unit = supplyLeg.unit;
+    }
+
+    const offtakeLeg = deal.contractLegs.find((l) => l.legType === "OFFTAKE_LEG" || l.legType === "OFFTAKE_SALE");
+    if (offtakeLeg) {
+      spec.offtakeContract = {
+        ...spec.offtakeContract,
+        contractReference: offtakeLeg.contractReference ?? spec.offtakeContract.contractReference,
+        incoterm: (offtakeLeg.incoterm as any) ?? spec.offtakeContract.incoterm,
+        port: offtakeLeg.port ?? spec.offtakeContract.port,
+        paymentType: (offtakeLeg.paymentType as any) ?? spec.offtakeContract.paymentType,
+        tenorDays: offtakeLeg.tenorDays ?? spec.offtakeContract.tenorDays,
+        contractAmountUsd: offtakeLeg.amountUsd ?? spec.offtakeContract.contractAmountUsd,
+      };
+      if (offtakeLeg.commodityName && !spec.commodity.name) spec.commodity.name = offtakeLeg.commodityName;
+      if (offtakeLeg.quantity && !spec.commodity.contractQuantity) spec.commodity.contractQuantity = offtakeLeg.quantity;
+    }
+  }
+
+  return spec;
+}

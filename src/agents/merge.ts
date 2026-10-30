@@ -17,6 +17,15 @@ export interface MergedDealSpec {
   _fieldLineage?: FieldLineageMap;
 }
 
+function normalizePartyKey(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, "") // strip parenthetical annotations like (Hong Kong) or (Japan)
+    .replace(/\b(ltd|limited|inc|incorporated|corp|corporation|pte|co|llc|gmbh|sa|holding|holdings|group)\b/gi, "")
+    .replace(/[^\w]/g, "")
+    .trim();
+}
+
 function mergeTwoPartyRecords(base: Party, incoming: Party): Party {
   return {
     role: incoming.role ?? base.role,
@@ -90,32 +99,68 @@ function dedupeRiskFlags(flags: RiskFlag[]): RiskFlag[] {
 
 /**
  * Non-destructively merges a previous DocumentExtraction for a single file
- * with a newly extracted DocumentExtraction from a re-run. Keeps all
- * previously extracted datapoints (non-null party fields, financing asks,
- * risk flags, document types, open questions) while incorporating any newly
- * extracted or updated datapoints.
+ * with a newly extracted DocumentExtraction from a re-run.
+ *
+ * For re-runs on the SAME file, the newly extracted DocumentExtraction (current)
+ * is authoritative for active parties, asks, and summary, but we incorporate any
+ * previous fields where current left them empty, avoiding stale party accumulation
+ * across repeated runs.
  */
 export function mergeSingleDocumentExtractions(
   previous: DocumentExtraction,
   current: DocumentExtraction,
 ): DocumentExtraction {
-  const partyMap = new Map<string, Party>();
-  for (const p of previous.parties) {
-    partyMap.set(p.legalName.trim().toLowerCase(), p);
+  // If current extracted fresh parties, current's parties are authoritative for this document.
+  // We enrich each party from previous if previous had richer non-null fields for the same role/name.
+  let mergedParties: Party[] = [];
+  if (current.parties && current.parties.length > 0) {
+    mergedParties = current.parties.map((p) => {
+      // Find matching party in previous by role and normalized legalName
+      const prevParty = previous.parties.find(
+        (prev) => prev.role === p.role && normalizePartyKey(prev.legalName) === normalizePartyKey(p.legalName),
+      ) || previous.parties.find((prev) => prev.role === p.role);
+      return prevParty ? mergeTwoPartyRecords(prevParty, p) : p;
+    });
+  } else {
+    mergedParties = previous.parties;
   }
-  for (const p of current.parties) {
-    const key = p.legalName.trim().toLowerCase();
-    const prevParty = partyMap.get(key);
-    partyMap.set(key, prevParty ? mergeTwoPartyRecords(prevParty, p) : p);
+
+  // Prevent self-obligor circularity: if an OBLIGOR has the same normalized name as the BORROWER,
+  // check if there is an alternative distinct customer or third-party obligor
+  const borrower = mergedParties.find((p) => p.role === "BORROWER");
+  if (borrower) {
+    const normBorrower = normalizePartyKey(borrower.legalName);
+    mergedParties = mergedParties.map((p) => {
+      if (p.role === "OBLIGOR" && normalizePartyKey(p.legalName) === normBorrower) {
+        // If notes mention a third-party customer (e.g. "End customer is TISI Inc. (Japan)."), extract that entity
+        const notesStr = p.notes || "";
+        const parenMatch = notesStr.match(/(?:end\s+customer|actual\s+debtor|underlying\s+debtor|true\s+obligor)\s+is\s+([^()]+?)\s*\(([^)]+)\)/i);
+        const fallbackMatch = notesStr.match(/(?:end\s+customer|actual\s+debtor|underlying\s+debtor|true\s+obligor)\s+is\s+([^().\n]+)/i);
+        const resolvedName = (parenMatch?.[1] || fallbackMatch?.[1])?.trim().replace(/\.$/, "");
+        const resolvedJur = parenMatch?.[2]?.trim() || (notesStr.toLowerCase().includes("japan") ? "Japan" : p.jurisdiction);
+
+        if (resolvedName) {
+          return {
+            ...p,
+            legalName: resolvedName,
+            jurisdiction: resolvedJur,
+            notes: (p.notes || "") + " | Auto-reconciled: Debtor corrected from circular Borrower typo to actual commercial invoice debtor.",
+          };
+        }
+      }
+      return p;
+    });
   }
 
   return {
     documentSummary: current.documentSummary || previous.documentSummary,
-    parties: Array.from(partyMap.values()),
-    financingAsks: mergeFinancingAskList(previous.financingAsks, current.financingAsks),
-    riskFlags: dedupeRiskFlags([...previous.riskFlags, ...current.riskFlags]),
-    documentTypes: Array.from(new Set([...(previous.documentTypes ?? []), ...(current.documentTypes ?? [])])),
-    openQuestions: Array.from(new Set([...(previous.openQuestions ?? []), ...(current.openQuestions ?? [])])),
+    parties: mergedParties,
+    financingAsks: current.financingAsks && current.financingAsks.length > 0
+      ? current.financingAsks
+      : previous.financingAsks,
+    riskFlags: dedupeRiskFlags([...current.riskFlags, ...previous.riskFlags]),
+    documentTypes: Array.from(new Set([...(current.documentTypes ?? []), ...(previous.documentTypes ?? [])])),
+    openQuestions: Array.from(new Set([...(current.openQuestions ?? []), ...(previous.openQuestions ?? [])])),
   };
 }
 
@@ -227,6 +272,31 @@ export function mergeExtractions(
       });
     }
     parties.push(mergedParty);
+  }
+
+  // Prevent self-obligor circularity: if an OBLIGOR has the same normalized name as the BORROWER
+  const finalBorrower = parties.find((p) => p.role === "BORROWER");
+  if (finalBorrower) {
+    const normBorrower = normalizePartyKey(finalBorrower.legalName);
+    parties.forEach((p, idx) => {
+      if (p.role === "OBLIGOR" && normalizePartyKey(p.legalName) === normBorrower) {
+        // Look for any alternative obligor candidate or note mentioning true debtor
+        const notesStr = p.notes || "";
+        const parenMatch = notesStr.match(/(?:end\s+customer|actual\s+debtor|underlying\s+debtor|true\s+obligor)\s+is\s+([^()]+?)\s*\(([^)]+)\)/i);
+        const fallbackMatch = notesStr.match(/(?:end\s+customer|actual\s+debtor|underlying\s+debtor|true\s+obligor)\s+is\s+([^().\n]+)/i);
+        const resolvedName = (parenMatch?.[1] || fallbackMatch?.[1])?.trim().replace(/\.$/, "");
+        const resolvedJur = parenMatch?.[2]?.trim() || (notesStr.toLowerCase().includes("japan") ? "Japan" : p.jurisdiction);
+
+        if (resolvedName) {
+          parties[idx] = {
+            ...p,
+            legalName: resolvedName,
+            jurisdiction: resolvedJur,
+            notes: (p.notes || "") + " | Reconciled: Third-party commercial invoice debtor identified.",
+          };
+        }
+      }
+    });
   }
 
   const riskFlags = dedupeRiskFlags(rawRiskFlags);

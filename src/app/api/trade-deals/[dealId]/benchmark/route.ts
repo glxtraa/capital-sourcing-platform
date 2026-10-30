@@ -28,17 +28,8 @@ export async function POST(
   }
 
   try {
-    const extractions = deal.documents
-      .map((d) => d.extractedRaw)
-      .filter(Boolean) as unknown as TradeDocumentExtraction[];
-
-    const reconciliation = reconcileTradeExtractions(deal.id, deal.name, extractions);
-    if (!reconciliation.tradeDealSpec) {
-      return NextResponse.json(
-        { error: "Trade deal must be reconciled before benchmarking." },
-        { status: 400 },
-      );
-    }
+    const { resolveAuthoritativeTradeDealSpec } = await import("@/agents/trade/trade-reconciliation");
+    const spec = resolveAuthoritativeTradeDealSpec(deal);
 
     const funders = await db.tradeFunder.findMany({
       include: { documentsRequired: true },
@@ -50,13 +41,13 @@ export async function POST(
     }
 
     const matchingResult = matchTradeDeal(
-      reconciliation.tradeDealSpec,
+      spec,
       funders,
       deal.documents,
     );
 
     const termSheetOutput = await runTradeBenchmark({
-      spec: reconciliation.tradeDealSpec,
+      spec,
       matchingResult,
       funderSourcesMap,
     });

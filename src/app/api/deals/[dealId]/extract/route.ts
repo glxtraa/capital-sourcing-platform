@@ -51,7 +51,8 @@ export async function POST(_req: Request, { params }: { params: Promise<{ dealId
 
     const extractions: Array<DocumentExtraction & { _taintOverride?: string | null; _fileName?: string }> = [];
 
-    if (deal.parties.length > 0 || deal.financingAsks.length > 0 || deal.riskFlags.length > 0) {
+    // Only inject previously extracted deal spec as fallback if NO documents have been extracted yet
+    if (extractedDocuments.length === 0 && (deal.parties.length > 0 || deal.financingAsks.length > 0 || deal.riskFlags.length > 0)) {
       const prevQuestions = deal.reviewerNotes
         ? deal.reviewerNotes
             .split("\n")

@@ -224,12 +224,92 @@ export async function applyDslPayloadToDealRecord(
         data: dataToUpdate,
       });
     }
+
+    // 2. Synchronize Trade Parties if provided
+    if (Array.isArray(payload.parties)) {
+      await db.tradeParty.deleteMany({ where: { dealId } });
+      await db.tradeParty.createMany({
+        data: payload.parties.map((p: any) => ({
+          dealId,
+          legalName: p.legalName || "Unknown Party",
+          role: p.role || "BUYER",
+          jurisdiction: p.country || p.jurisdiction || "Global",
+        })),
+      });
+    }
+
+    // 3. Synchronize Contract Legs if provided
+    if (Array.isArray(payload.contractLegs)) {
+      await db.contractLeg.deleteMany({ where: { dealId } });
+      await db.contractLeg.createMany({
+        data: payload.contractLegs.map((l: any) => ({
+          dealId,
+          legType: l.legRole || l.legType || "SUPPLY_LEG",
+          contractReference: l.contractReference || "CR-" + Math.floor(Math.random() * 10000),
+          sellerName: l.sellerName || "Supplier",
+          buyerName: l.buyerName || "Trader",
+          incoterm: l.incoterm || "FOB",
+          port: l.port || "Origin Port",
+          paymentType: l.paymentType || "LC",
+          commodityName: l.goodsDescription || l.commodityName || "Commodity Cargo",
+          quantity: typeof l.quantity === "number" ? l.quantity : 1000,
+          unit: l.unit || "MT",
+          unitPrice: typeof l.unitPrice === "number" ? l.unitPrice : 1000,
+          amountUsd: typeof l.pricingAmountUsd === "number" ? l.pricingAmountUsd : (l.amountUsd ?? 1000000),
+          tenorDays: typeof l.paymentTermsDays === "number" ? l.paymentTermsDays : (l.tenorDays ?? 30),
+        })),
+      });
+    }
   } else if (assetClass === "INVOICE" || dslType === "INVOICE_DEAL_SPEC") {
     const rawName = typeof payload.companyName === "string" ? payload.companyName : typeof payload.name === "string" ? payload.name : null;
     if (rawName && rawName.trim()) {
       await db.deal.update({
         where: { id: dealId },
         data: { name: rawName.trim() },
+      });
+    }
+
+    // 2. Synchronize Invoice Parties if provided
+    if (Array.isArray(payload.parties)) {
+      await db.party.deleteMany({ where: { dealId } });
+      await db.party.createMany({
+        data: payload.parties.map((p: any) => ({
+          dealId,
+          legalName: p.legalName || p.name || "Unknown Party",
+          role: (p.role === "BORROWER" || p.role === "CLIENT"
+            ? "BORROWER"
+            : p.role === "SUPPLIER"
+            ? "SUPPLIER"
+            : p.role === "INTERMEDIARY"
+            ? "INTERMEDIARY"
+            : p.role === "GUARANTOR"
+            ? "GUARANTOR"
+            : "OBLIGOR") as any,
+          jurisdiction: p.jurisdiction || null,
+          publicRating: p.publicRating || null,
+          isListed: typeof p.isListed === "boolean" ? p.isListed : null,
+          primaryRightHolderName: p.primaryRightHolderName || null,
+          primaryRightHolderVerified: Boolean(p.primaryRightHolderVerified),
+          notes: p.notes || null,
+        })),
+      });
+    }
+
+    // 3. Synchronize Invoice Financing Asks if provided
+    if (Array.isArray(payload.financingAsks)) {
+      await db.financingAsk.deleteMany({ where: { dealId } });
+      await db.financingAsk.createMany({
+        data: payload.financingAsks.map((a: any) => ({
+          dealId,
+          structureType: a.structureType || "POST_SHIPMENT_RECEIVABLES_DISCOUNTING",
+          amount: typeof a.amount === "number" ? a.amount : (a.amountUsd ?? 250000),
+          currency: a.currency || "USD",
+          advanceRatePct: typeof a.advanceRatePct === "number" ? a.advanceRatePct : 85,
+          tenorDaysMax: typeof a.tenorDaysMax === "number" ? a.tenorDaysMax : (a.targetTenorDays ?? 60),
+          tenorDaysMin: typeof a.tenorDaysMin === "number" ? a.tenorDaysMin : 30,
+          tenorNote: a.tenorNote || null,
+          recurring: Boolean(a.recurring),
+        })),
       });
     }
   }

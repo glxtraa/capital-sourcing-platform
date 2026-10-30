@@ -868,16 +868,40 @@ export function synthesizeFieldLineageFromDsl(dsl: any): FieldLineageMap {
 
   // 1. Invoice Deal Spec
   if (Array.isArray(dsl.parties)) {
+    // Collect all party extractions across uploaded documents to hydrate verbatimQuote & pageOrSheet
+    const allDocParties: any[] = [];
+    dealDocuments.forEach((d) => {
+      const raw = d?.extractedFieldsRaw || d?.extractedRaw;
+      if (raw && Array.isArray(raw.parties)) {
+        raw.parties.forEach((dp: any) => {
+          allDocParties.push({ ...dp, _doc: d });
+        });
+      }
+    });
+
     dsl.parties.forEach((p: any, idx: number) => {
-      const hasRealPartyQuote = Boolean(p.verbatimQuote && typeof p.verbatimQuote === "string");
-      const realPartyTaint = isHuman ? "HUMAN_VERIFIED" : (hasRealPartyQuote ? "AUDITED_PROOF" : "UNVERIFIED_CLAIM");
+      // Find matching extracted party across data room documents
+      const normName = (p.legalName || "").trim().toLowerCase();
+      const matchedDocParty = allDocParties.find(
+        (dp) => dp.role === p.role && (dp.legalName || "").trim().toLowerCase() === normName
+      ) || allDocParties.find(
+        (dp) => dp.role === p.role
+      );
+
+      const realQuote = p.verbatimQuote || matchedDocParty?.verbatimQuote;
+      const realPage = p.pageOrSheet || matchedDocParty?.pageOrSheet;
+      const matchingDoc = matchedDocParty?._doc;
+      const matchingDocTaint = matchingDoc ? resolveDocumentTaint(matchingDoc.documentTypes || [], matchingDoc.taintOverride) : "UNVERIFIED_CLAIM";
+
+      const hasRealPartyQuote = Boolean(realQuote && typeof realQuote === "string");
+      const realPartyTaint = isHuman ? "HUMAN_VERIFIED" : (hasRealPartyQuote ? "AUDITED_PROOF" : matchingDocTaint);
 
       if (p.legalName) {
         const docRes = resolveDealSourceDocument({
           dealDocs: dealDocuments,
           dealType: "INVOICE",
           dealId,
-          preferredFileNames: p.sourceDocuments,
+          preferredFileNames: p.sourceDocuments || (matchingDoc?.fileName ? [matchingDoc.fileName] : undefined),
           matchingTaxonomyCodes: ["DEAL_CONTRACT", "CORP_INCORP"],
         });
 
@@ -907,8 +931,8 @@ export function synthesizeFieldLineageFromDsl(dsl: any): FieldLineageMap {
                 documentId: docRes.documentId,
                 sourceFileUrl: docRes.sourceFileUrl,
                 taint: realPartyTaint,
-                pageOrSheet: p.pageOrSheet || null,
-                verbatimQuote: p.verbatimQuote || null,
+                pageOrSheet: realPage || null,
+                verbatimQuote: realQuote || null,
                 documentTypes: ["DEAL_CONTRACT"],
               },
               status: "ACTIVE_WINNER",
@@ -932,7 +956,7 @@ export function synthesizeFieldLineageFromDsl(dsl: any): FieldLineageMap {
           dealDocs: dealDocuments,
           dealType: "INVOICE",
           dealId,
-          preferredFileNames: p.sourceDocuments,
+          preferredFileNames: p.sourceDocuments || (matchingDoc?.fileName ? [matchingDoc.fileName] : undefined),
           matchingTaxonomyCodes: ["CORP_INCORP", "DEAL_CONTRACT"],
         });
 
@@ -962,8 +986,8 @@ export function synthesizeFieldLineageFromDsl(dsl: any): FieldLineageMap {
                 documentId: docRes.documentId,
                 sourceFileUrl: docRes.sourceFileUrl,
                 taint: realPartyTaint,
-                pageOrSheet: p.pageOrSheet || null,
-                verbatimQuote: p.verbatimQuote || null,
+                pageOrSheet: realPage || null,
+                verbatimQuote: realQuote || null,
                 documentTypes: ["CORP_INCORP"],
               },
               status: "ACTIVE_WINNER",
@@ -1039,16 +1063,36 @@ export function synthesizeFieldLineageFromDsl(dsl: any): FieldLineageMap {
   }
 
   if (Array.isArray(dsl.financingAsks)) {
+    // Collect all ask extractions across uploaded documents to hydrate quotes
+    const allDocAsks: any[] = [];
+    dealDocuments.forEach((d) => {
+      const raw = d?.extractedFieldsRaw || d?.extractedRaw;
+      if (raw && Array.isArray(raw.financingAsks)) {
+        raw.financingAsks.forEach((da: any) => {
+          allDocAsks.push({ ...da, _doc: d });
+        });
+      }
+    });
+
     dsl.financingAsks.forEach((ask: any, idx: number) => {
-      const hasRealAskQuote = Boolean(ask.verbatimQuote && typeof ask.verbatimQuote === "string");
-      const realAskTaint = isHuman ? "HUMAN_VERIFIED" : (hasRealAskQuote ? "AUDITED_PROOF" : "UNVERIFIED_CLAIM");
+      const matchedDocAsk = allDocAsks.find(
+        (da) => da.structureType === ask.structureType || (ask.amount && da.amount === ask.amount)
+      ) || allDocAsks[0];
+
+      const realAskQuote = ask.verbatimQuote || matchedDocAsk?.verbatimQuote;
+      const realAskPage = ask.pageOrSheet || matchedDocAsk?.pageOrSheet;
+      const matchingDoc = matchedDocAsk?._doc;
+      const matchingDocTaint = matchingDoc ? resolveDocumentTaint(matchingDoc.documentTypes || [], matchingDoc.taintOverride) : "UNVERIFIED_CLAIM";
+
+      const hasRealAskQuote = Boolean(realAskQuote && typeof realAskQuote === "string");
+      const realAskTaint = isHuman ? "HUMAN_VERIFIED" : (hasRealAskQuote ? "AUDITED_PROOF" : matchingDocTaint);
 
       if (ask.amount != null) {
         const docRes = resolveDealSourceDocument({
           dealDocs: dealDocuments,
           dealType: "INVOICE",
           dealId,
-          preferredFileNames: ask.sourceDocuments,
+          preferredFileNames: ask.sourceDocuments || (matchingDoc?.fileName ? [matchingDoc.fileName] : undefined),
           matchingTaxonomyCodes: ["DEAL_INVOICE", "DEAL_CONTRACT"],
         });
 
@@ -1078,8 +1122,8 @@ export function synthesizeFieldLineageFromDsl(dsl: any): FieldLineageMap {
                 documentId: docRes.documentId,
                 sourceFileUrl: docRes.sourceFileUrl,
                 taint: realAskTaint,
-                pageOrSheet: ask.pageOrSheet || null,
-                verbatimQuote: ask.verbatimQuote || null,
+                pageOrSheet: realAskPage || ask.pageOrSheet || null,
+                verbatimQuote: realAskQuote || ask.verbatimQuote || null,
                 documentTypes: ["DEAL_INVOICE"],
               },
               status: "ACTIVE_WINNER",
@@ -1103,7 +1147,7 @@ export function synthesizeFieldLineageFromDsl(dsl: any): FieldLineageMap {
           dealDocs: dealDocuments,
           dealType: "INVOICE",
           dealId,
-          preferredFileNames: ask.sourceDocuments,
+          preferredFileNames: ask.sourceDocuments || (matchingDoc?.fileName ? [matchingDoc.fileName] : undefined),
           matchingTaxonomyCodes: ["DEAL_CONTRACT", "DEAL_INVOICE"],
         });
 
@@ -1133,8 +1177,8 @@ export function synthesizeFieldLineageFromDsl(dsl: any): FieldLineageMap {
                 documentId: docRes.documentId,
                 sourceFileUrl: docRes.sourceFileUrl,
                 taint: realAskTaint,
-                pageOrSheet: ask.pageOrSheet || null,
-                verbatimQuote: ask.verbatimQuote || null,
+                pageOrSheet: realAskPage || ask.pageOrSheet || null,
+                verbatimQuote: realAskQuote || ask.verbatimQuote || null,
                 documentTypes: [],
               },
               status: "ACTIVE_WINNER",
@@ -1154,7 +1198,7 @@ export function synthesizeFieldLineageFromDsl(dsl: any): FieldLineageMap {
           dealDocs: dealDocuments,
           dealType: "INVOICE",
           dealId,
-          preferredFileNames: ask.sourceDocuments,
+          preferredFileNames: ask.sourceDocuments || (matchingDoc?.fileName ? [matchingDoc.fileName] : undefined),
           matchingTaxonomyCodes: ["DEAL_INVOICE", "DEAL_CONTRACT"],
         });
 
@@ -1185,8 +1229,8 @@ export function synthesizeFieldLineageFromDsl(dsl: any): FieldLineageMap {
                 documentId: docRes.documentId,
                 sourceFileUrl: docRes.sourceFileUrl,
                 taint: realAskTaint,
-                pageOrSheet: ask.pageOrSheet || null,
-                verbatimQuote: ask.verbatimQuote || null,
+                pageOrSheet: realAskPage || ask.pageOrSheet || null,
+                verbatimQuote: realAskQuote || ask.verbatimQuote || null,
                 documentTypes: ["DEAL_INVOICE"],
               },
               status: "ACTIVE_WINNER",

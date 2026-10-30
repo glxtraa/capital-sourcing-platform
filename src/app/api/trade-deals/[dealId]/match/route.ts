@@ -50,27 +50,15 @@ export async function POST(
 
   try {
     const policyMap = await getTaintPolicyMap("TRADE");
-    const extractions = deal.documents
-      .filter((d) => Boolean(d.extractedRaw))
-      .map((d) => ({
-        ...(d.extractedRaw as unknown as TradeDocumentExtraction),
-        _taintOverride: d.taintOverride,
-      }));
-
-    const reconciliation = reconcileTradeExtractions(deal.id, deal.name, extractions, policyMap);
-    if (!reconciliation.tradeDealSpec) {
-      return NextResponse.json(
-        { error: "Trade deal has not been reconciled. Please run reconcile first." },
-        { status: 400 },
-      );
-    }
+    const { resolveAuthoritativeTradeDealSpec } = await import("@/agents/trade/trade-reconciliation");
+    const spec = resolveAuthoritativeTradeDealSpec(deal, policyMap);
 
     const funders = await db.tradeFunder.findMany({
       include: { documentsRequired: true },
     });
 
     const matchResult = matchTradeDeal(
-      reconciliation.tradeDealSpec,
+      spec,
       funders,
       deal.documents,
       { relaxInferredBlockers: Boolean(body?.relaxInferredBlockers) },

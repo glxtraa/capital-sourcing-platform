@@ -46,27 +46,8 @@ export async function POST(
 
   try {
     const policyMap = await getTaintPolicyMap("VC");
-    const extractions = deal.documents
-      .filter((d) => Boolean(d.extractedRaw))
-      .map((d) => ({
-        ...(d.extractedRaw as unknown as StartupDocumentExtraction),
-        _taintOverride: d.taintOverride,
-        _fileName: d.fileName,
-      }));
-
-    const reconciliation = reconcileStartupExtractions(
-      deal.id,
-      deal.companyName,
-      extractions,
-      policyMap,
-    );
-    const spec = reconciliation.startupDealSpec;
-    if (!spec) {
-      return NextResponse.json(
-        { error: "Startup deal has not been reconciled. Please run reconcile first." },
-        { status: 400 },
-      );
-    }
+    const { resolveAuthoritativeStartupDealSpec } = await import("@/agents/vc/vc-reconciliation");
+    const spec = resolveAuthoritativeStartupDealSpec(deal, policyMap);
 
     if (spec.competitors.length === 0 && deal.competitors.length > 0) {
       spec.competitors = deal.competitors.map((c) => ({

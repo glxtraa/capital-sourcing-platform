@@ -226,8 +226,8 @@ export function TradeDealWorkspaceTabs({ deal }: TradeDealWorkspaceTabsProps) {
 
   // Helper to determine if a funder match is only failing due to inferred criteria
   function isMatchOnlyFailingInferred(m: typeof deal.matches[0]) {
-    const buyLeg = deal.contractLegs.find((l) => l.legType === "SUPPLY_PURCHASE");
-    const sellLeg = deal.contractLegs.find((l) => l.legType === "OFFTAKE_SALE");
+    const buyLeg = deal.contractLegs.find((l) => l.legType === "SUPPLY_PURCHASE" || l.legType === "SUPPLY_LEG");
+    const sellLeg = deal.contractLegs.find((l) => l.legType === "OFFTAKE_SALE" || l.legType === "OFFTAKE_LEG");
     const supplier = deal.parties.find((p) => p.role === "SUPPLIER");
     const trader = deal.parties.find((p) => p.role === "TRADER");
     const buyer = deal.parties.find((p) => p.role === "BUYER");

@@ -465,3 +465,186 @@ export function reconcileStartupExtractions(
     readyForMatching,
   };
 }
+
+/**
+ * Overlays persisted Stage 2 database entities (deal.companyName, stage, primaryVertical, industry,
+ * legalEntityJurisdiction, founders, capTable, financingAsks, competitors) onto a reconciled
+ * StartupDealSpec so manual user edits and revisions are 100% authoritative during Stage 3 matching
+ * and Stage 4 benchmarking.
+ */
+export function resolveAuthoritativeStartupDealSpec(
+  deal: {
+    id: string;
+    companyName: string;
+    stage?: string | null;
+    primaryVertical?: string | null;
+    industry?: string | null;
+    subIndustries?: string[];
+    legalEntityJurisdiction?: string | null;
+    founders?: Array<{
+      name: string;
+      role: string;
+      isTechnical?: boolean;
+      isRepeatFounder?: boolean;
+      equityOwnershipPct?: number | null;
+      vestingConfirmed?: boolean;
+      priorExits?: string[];
+    }>;
+    capTable?: {
+      foundersOwnershipPct?: number | null;
+      investorOwnershipPct?: number | null;
+      optionPoolPct?: number | null;
+      safesNotesOutstandingUsd?: number | null;
+      safeHoldersJson?: any;
+      commonHoldersJson?: any;
+      hasDeadEquity?: boolean;
+      deadEquityNotes?: string | null;
+    } | null;
+    financingAsks?: Array<{
+      targetRaiseUsd?: number | null;
+      instrumentType?: string | null;
+      valuationCapUsd?: number | null;
+      discountPct?: number | null;
+      plannedRunwayMonths?: number | null;
+      leadCommitted?: boolean;
+      committedAmountUsd?: number;
+    }>;
+    competitors?: Array<any>;
+    commercialProspects?: Array<any>;
+    riskFlags?: Array<any>;
+    documents?: Array<any>;
+  },
+  policyMap?: Record<string, "AUDITED_PROOF" | "UNVERIFIED_CLAIM">,
+): StartupDealSpec {
+  const extractions = (deal.documents ?? [])
+    .filter((d: any) => Boolean(d.extractedRaw))
+    .map((d: any) => ({
+      ...(d.extractedRaw as unknown as StartupDocumentExtraction),
+      _taintOverride: d.taintOverride,
+      _fileName: d.fileName,
+    }));
+
+  const baseRecon = reconcileStartupExtractions(deal.id, deal.companyName, extractions, policyMap);
+  let spec: StartupDealSpec = baseRecon.startupDealSpec ?? {
+    dealId: deal.id,
+    companyName: deal.companyName,
+    stage: (deal.stage as any) || "SEED",
+    primaryVertical: (deal.primaryVertical as any) || "B2B_SAAS",
+    industry: deal.industry || "Technology",
+    subIndustries: deal.subIndustries || [],
+    legalEntityJurisdiction: deal.legalEntityJurisdiction || null,
+    founders: [],
+    competitors: [],
+    commercialProspects: [],
+    traction: {
+      arrUsd: null,
+      mrrUsd: null,
+      momGrowthRatePct: null,
+      grossMarginPct: null,
+      netMonthlyBurnUsd: null,
+      cashRunwayMonths: null,
+      activeCustomersCount: null,
+      customerLoiPipelineUsd: null,
+      netRevenueRetentionPct: null,
+    },
+    capTable: {
+      foundersOwnershipPct: deal.capTable?.foundersOwnershipPct ?? null,
+      investorOwnershipPct: deal.capTable?.investorOwnershipPct ?? null,
+      optionPoolPct: deal.capTable?.optionPoolPct ?? null,
+      safesNotesOutstandingUsd: deal.capTable?.safesNotesOutstandingUsd ?? 0,
+      safeHolders: [],
+      commonHolders: [],
+      hasDeadEquity: Boolean(deal.capTable?.hasDeadEquity),
+      deadEquityNotes: deal.capTable?.deadEquityNotes ?? null,
+    },
+    financingAsk: {
+      targetRaiseUsd: deal.financingAsks?.[0]?.targetRaiseUsd ?? null,
+      instrumentType: (deal.financingAsks?.[0]?.instrumentType as any) || "POST_MONEY_SAFE",
+      valuationCapUsd: deal.financingAsks?.[0]?.valuationCapUsd ?? null,
+      discountPct: deal.financingAsks?.[0]?.discountPct ?? null,
+      plannedRunwayMonths: deal.financingAsks?.[0]?.plannedRunwayMonths ?? null,
+      leadCommitted: Boolean(deal.financingAsks?.[0]?.leadCommitted),
+      committedAmountUsd: deal.financingAsks?.[0]?.committedAmountUsd ?? 0,
+    },
+    reconciliationAudit: {
+      capTableReconciled: true,
+      metricsValidatedAgainstFinancialModel: true,
+      dataRoomDiscrepancies: [],
+      impliedPostMoneyValuationUsd: null,
+      impliedRunwayExtensionMonths: null,
+      founderDilutionPct: null,
+    },
+    competitorAudit: { totalIdentified: 0, directCompetitorsCount: 0, verifiedSourcesCount: 0, conflictingInvestorsIdentified: [], auditSummary: "" },
+    commercialAudit: { totalIdentified: 0, targetCustomersCount: 0, strategicPartnersCount: 0, verifiedSourcesCount: 0, auditSummary: "" },
+    riskFlags: [],
+    readyForMatching: false,
+  };
+
+  // 1. Overlay core metadata
+  if (deal.stage) spec.stage = deal.stage as any;
+  if (deal.primaryVertical) spec.primaryVertical = deal.primaryVertical as any;
+  if (deal.industry) spec.industry = deal.industry;
+  if (deal.subIndustries && deal.subIndustries.length > 0) spec.subIndustries = deal.subIndustries;
+  if (deal.legalEntityJurisdiction) spec.legalEntityJurisdiction = deal.legalEntityJurisdiction;
+
+  // 2. Overlay founders if edited
+  if (deal.founders && deal.founders.length > 0) {
+    spec.founders = deal.founders.map((f) => ({
+      name: f.name,
+      role: f.role,
+      isTechnical: Boolean(f.isTechnical),
+      isRepeatFounder: Boolean(f.isRepeatFounder),
+      equityOwnershipPct: f.equityOwnershipPct ?? null,
+      vestingConfirmed: f.vestingConfirmed ?? true,
+      linkedinUrl: null,
+      priorExits: f.priorExits || [],
+    }));
+  }
+
+  // 3. Overlay Cap Table if edited
+  if (deal.capTable) {
+    spec.capTable = {
+      ...spec.capTable,
+      foundersOwnershipPct: deal.capTable.foundersOwnershipPct ?? spec.capTable.foundersOwnershipPct,
+      investorOwnershipPct: deal.capTable.investorOwnershipPct ?? spec.capTable.investorOwnershipPct,
+      optionPoolPct: deal.capTable.optionPoolPct ?? spec.capTable.optionPoolPct,
+      safesNotesOutstandingUsd: deal.capTable.safesNotesOutstandingUsd ?? spec.capTable.safesNotesOutstandingUsd,
+      safeHolders: Array.isArray(deal.capTable.safeHoldersJson) ? deal.capTable.safeHoldersJson : spec.capTable.safeHolders,
+      commonHolders: Array.isArray(deal.capTable.commonHoldersJson) ? deal.capTable.commonHoldersJson : spec.capTable.commonHolders,
+      hasDeadEquity: deal.capTable.hasDeadEquity ?? spec.capTable.hasDeadEquity,
+      deadEquityNotes: deal.capTable.deadEquityNotes ?? spec.capTable.deadEquityNotes,
+    };
+  }
+
+  // 4. Overlay Financing Ask if edited
+  if (deal.financingAsks && deal.financingAsks.length > 0) {
+    const ask = deal.financingAsks[0];
+    spec.financingAsk = {
+      ...spec.financingAsk,
+      targetRaiseUsd: ask.targetRaiseUsd ?? spec.financingAsk.targetRaiseUsd,
+      instrumentType: (ask.instrumentType as any) ?? spec.financingAsk.instrumentType,
+      valuationCapUsd: ask.valuationCapUsd ?? spec.financingAsk.valuationCapUsd,
+      discountPct: ask.discountPct ?? spec.financingAsk.discountPct,
+      plannedRunwayMonths: ask.plannedRunwayMonths ?? spec.financingAsk.plannedRunwayMonths,
+      leadCommitted: ask.leadCommitted ?? spec.financingAsk.leadCommitted,
+      committedAmountUsd: ask.committedAmountUsd ?? spec.financingAsk.committedAmountUsd,
+    };
+  }
+
+  // 5. Overlay competitors
+  if (deal.competitors && deal.competitors.length > 0) {
+    spec.competitors = deal.competitors.map((c) => ({
+      name: c.name,
+      websiteUrl: c.websiteUrl,
+      description: c.description,
+      overlapDegree: c.overlapDegree || "DIRECT",
+      knownInvestors: c.knownInvestors || [],
+      differentiation: c.differentiation,
+      sourceUrl: c.sourceUrl,
+      sourceVerified: Boolean(c.sourceVerified),
+      sourceHttpStatus: c.sourceHttpStatus,
+    }));
+  }
+
+  return spec;
+}

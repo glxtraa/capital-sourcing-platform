@@ -29,30 +29,21 @@ export async function POST(
   }
 
   try {
-    const extractions = deal.documents
-      .map((d) => d.extractedRaw)
-      .filter(Boolean) as unknown as StartupDocumentExtraction[];
-
-    const reconciliation = reconcileStartupExtractions(deal.id, deal.companyName, extractions);
-    if (!reconciliation.startupDealSpec) {
-      return NextResponse.json(
-        { error: "Startup deal must be reconciled before benchmarking." },
-        { status: 400 },
-      );
-    }
+    const { resolveAuthoritativeStartupDealSpec } = await import("@/agents/vc/vc-reconciliation");
+    const spec = resolveAuthoritativeStartupDealSpec(deal);
 
     const investors = await db.startupInvestor.findMany({
       include: { documentsRequired: true },
     });
 
     const matchingResult = matchStartupDeal(
-      reconciliation.startupDealSpec,
+      spec,
       investors,
       deal.documents,
     );
 
     const termSheetOutput = await runVCBenchmark({
-      spec: reconciliation.startupDealSpec,
+      spec,
       matchingResult,
     });
 

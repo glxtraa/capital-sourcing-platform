@@ -144,10 +144,42 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ dealId
         parties: true,
         financingAsks: true,
         documents: true,
+        riskFlags: true,
       },
     });
 
     if (updatedDeal) {
+      // Record a HUMAN_OVERRIDE revision in dealDslRevision to keep TabDslInspectorPanel in sync
+      const latestRevision = await db.dealDslRevision.findFirst({
+        where: { dealId, dslType: "INVOICE_DEAL_SPEC" },
+        orderBy: { versionNumber: "desc" },
+        select: { versionNumber: true },
+      });
+      const nextVer = (latestRevision?.versionNumber ?? 0) + 1;
+      await db.dealDslRevision.updateMany({
+        where: { dealId, dslType: "INVOICE_DEAL_SPEC", isCurrent: true },
+        data: { isCurrent: false },
+      });
+      await db.dealDslRevision.create({
+        data: {
+          assetClass: "INVOICE",
+          dealId,
+          tabKey: "spec",
+          dslType: "INVOICE_DEAL_SPEC",
+          versionNumber: nextVer,
+          label: `v${nextVer} - Human Correction (Edit Deal Spec)`,
+          authorType: "HUMAN_OVERRIDE",
+          authorNote: "Manual update via Edit Deal Spec modal",
+          payloadJson: {
+            name: updatedDeal.name,
+            parties: updatedDeal.parties,
+            financingAsks: updatedDeal.financingAsks,
+            riskFlags: updatedDeal.riskFlags,
+          },
+          isCurrent: true,
+        },
+      });
+
       const { buildMatchInputs, matchAllProviders } = await import("@/lib/matching");
       const { dealInput, askInput } = buildMatchInputs(updatedDeal.parties, updatedDeal.financingAsks);
       const providers = await db.provider.findMany();
