@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Search, Loader2, Sparkles, Building2, CheckCircle2, Globe, ShieldAlert } from "lucide-react";
+import { Search, Loader2, Sparkles, Building2, CheckCircle2, Globe, ShieldAlert, History } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, Button, Badge } from "@/components/ui/primitives";
+import { AgentTrialsAuditDrawer } from "@/components/AgentTrialsAuditDrawer";
 
 export function VcFunderDealResearchCard({
   dealId,
@@ -28,6 +29,7 @@ export function VcFunderDealResearchCard({
   const [stepLabel, setStepLabel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [successNotice, setSuccessNotice] = useState<string | null>(null);
+  const [showTrialsDrawer, setShowTrialsDrawer] = useState(false);
 
   const calculatedDefaultHint =
     defaultHint ||
@@ -132,10 +134,18 @@ export function VcFunderDealResearchCard({
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-2">
             <Badge tone="purple" className="text-[10px]">
               Live Web + Exa + Link Caching
             </Badge>
+            <button
+              type="button"
+              onClick={() => setShowTrialsDrawer(true)}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border border-purple-200 dark:border-purple-800 bg-white/80 dark:bg-slate-900 text-purple-700 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-950/50 transition-colors shadow-xs"
+            >
+              <History className="h-3.5 w-3.5 text-purple-500" />
+              <span>Trials &amp; Grounding Audit</span>
+            </button>
           </div>
         </div>
       </CardHeader>
@@ -192,12 +202,28 @@ export function VcFunderDealResearchCard({
           )}
 
           {error && (
-            <div className="flex items-center gap-2 text-xs text-red-800 dark:text-red-300 bg-red-50 dark:bg-red-950/40 p-2.5 rounded-md border border-red-200 dark:border-red-800">
-              <ShieldAlert className="h-4 w-4 shrink-0 text-red-600" />
-              <span>{error}</span>
+            <div className="flex items-center justify-between text-xs text-red-800 dark:text-red-300 bg-red-50 dark:bg-red-950/40 p-2.5 rounded-md border border-red-200 dark:border-red-800">
+              <div className="flex items-center gap-2">
+                <ShieldAlert className="h-4 w-4 shrink-0 text-red-600" />
+                <span>{error}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowTrialsDrawer(true)}
+                className="underline font-semibold shrink-0 text-red-800 dark:text-red-200 hover:text-red-950 ml-2"
+              >
+                View Failure Trials ({">"})
+              </button>
             </div>
           )}
         </form>
+
+        <AgentTrialsAuditDrawer
+          dealId={dealId}
+          assetClass="VC"
+          isOpen={showTrialsDrawer}
+          onClose={() => setShowTrialsDrawer(false)}
+        />
 
         <div className="flex flex-wrap items-center gap-1.5 pt-1 text-[11px] text-neutral-500">
           <span className="font-semibold text-neutral-600 dark:text-neutral-400">Quick Searches:</span>

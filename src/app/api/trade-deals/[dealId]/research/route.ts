@@ -8,6 +8,7 @@ import {
 import { testSourceLinks } from "@/lib/link-verifier";
 import { gateTradeFunder } from "@/dsl/compiler";
 import { recordPromptImprovementSuggestion } from "@/lib/prompt-improvement";
+import { recordAgentTrial } from "@/lib/agent-trial-tracker";
 
 export const maxDuration = 300;
 
@@ -109,6 +110,7 @@ export async function POST(
 
     const MAX_GATE_ATTEMPTS = 3;
     for (let attempt = 1; attempt <= MAX_GATE_ATTEMPTS; attempt++) {
+      const trialStart = Date.now();
       // 1. Audit and verify source links with keyword grounding
       const funderKeywords = [rawFunder.name, rawFunder.id.split("-")[0]].filter(Boolean);
       const linkAudit = body.citedUrls.length > 0
@@ -124,8 +126,48 @@ export async function POST(
       );
 
       if (gateResult.passed && gateResult.cleanData) {
+        // Record successful trial!
+        await recordAgentTrial({
+          runId: run.id,
+          dealId,
+          assetClass: "TRADE",
+          stage: "RESEARCH_STRUCTURE",
+          trialNumber: attempt,
+          status: "SUCCESS",
+          entityName: rawFunder.name,
+          inputSummary: body.hint,
+          extractedPayload: rawFunder,
+          diagnosticsJson: gateResult.report,
+          durationMs: Date.now() - trialStart,
+        });
         break; // Passed strict verification!
       }
+
+      const nextFeedback = `IMPORTANT DSL GATE CORRECTION REQUIRED (Attempt ${attempt + 1}/${MAX_GATE_ATTEMPTS}):
+Your previous extraction was REJECTED by the strict verification gate:
+"${gateResult.error}"
+
+You must autonomously correct this extraction now:
+1. Funder 'name' MUST be the exact corporate/institutional brand name (e.g. "Bladex", "Rabobank", "Stenn") found on the cited web pages.
+2. DO NOT output a composite description, category name, or multi-institution string with parentheses or slashes.
+3. Use only claims, minimums, and commodities that actually appear in the findings and cited URLs.`;
+
+      // Record failed gate trial with candidate and rejection reason
+      await recordAgentTrial({
+        runId: run.id,
+        dealId,
+        assetClass: "TRADE",
+        stage: "RESEARCH_STRUCTURE",
+        trialNumber: attempt,
+        status: "FAILED_GATE",
+        entityName: rawFunder.name,
+        inputSummary: body.hint,
+        extractedPayload: rawFunder,
+        failureReason: gateResult.error || "Failed DSL grounding gate audit.",
+        promptFeedback: nextFeedback,
+        diagnosticsJson: gateResult.report,
+        durationMs: Date.now() - trialStart,
+      });
 
       // Record rejection in Prompt Improvement database
       await recordPromptImprovementSuggestion({
@@ -148,16 +190,7 @@ export async function POST(
         rawFunder = await structureTradeFunderFindings(
           body.hint,
           { findings: body.findings, citedUrls: body.citedUrls },
-          {
-            feedbackPrompt: `IMPORTANT DSL GATE CORRECTION REQUIRED (Attempt ${attempt + 1}/${MAX_GATE_ATTEMPTS}):
-Your previous extraction was REJECTED by the strict verification gate:
-"${gateResult.error}"
-
-You must autonomously correct this extraction now:
-1. Funder 'name' MUST be the exact corporate/institutional brand name (e.g. "Bladex", "Rabobank", "Stenn") found on the cited web pages.
-2. DO NOT output a composite description, category name, or multi-institution string with parentheses or slashes.
-3. Use only claims, minimums, and commodities that actually appear in the findings and cited URLs.`,
-          }
+          { feedbackPrompt: nextFeedback }
         );
       }
     }

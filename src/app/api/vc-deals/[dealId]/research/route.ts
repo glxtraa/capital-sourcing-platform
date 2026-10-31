@@ -11,6 +11,7 @@ import { researchStartupCompetitors } from "@/agents/vc/vc-competitor-agent";
 import { testSourceLinks } from "@/lib/link-verifier";
 import { gateStartupInvestor } from "@/dsl/compiler";
 import { recordPromptImprovementSuggestion } from "@/lib/prompt-improvement";
+import { recordAgentTrial } from "@/lib/agent-trial-tracker";
 import type { StartupDocumentExtraction, StartupInvestorDTO } from "@/dsl/vc";
 
 function cleanJson<T>(value: T): T {
@@ -220,6 +221,7 @@ export async function POST(
 
       const MAX_GATE_ATTEMPTS = 3;
       for (let attempt = 1; attempt <= MAX_GATE_ATTEMPTS; attempt++) {
+        const trialStart = Date.now();
         // Filter out non-VC / non-startup equity organizations
         const nonVCPattern = /does not invest in (?:startups|equity|early-stage)|only (?:funds large-scale infrastructure|provides grants to non-profit|engaged in commercial real estate)/i;
         const gatingNotes = `${investor.gatingFactor || ""} ${investor.notes || ""}`;
@@ -255,8 +257,48 @@ export async function POST(
         );
 
         if (gateResult.passed && gateResult.cleanData) {
+          // Record successful trial!
+          await recordAgentTrial({
+            runId: run.id,
+            dealId,
+            assetClass: "VC",
+            stage: "RESEARCH_STRUCTURE",
+            trialNumber: attempt,
+            status: "SUCCESS",
+            entityName: investor.name,
+            inputSummary: body.hint,
+            extractedPayload: investor,
+            diagnosticsJson: gateResult.report,
+            durationMs: Date.now() - trialStart,
+          });
           break; // Passed strict verification!
         }
+
+        const nextFeedback = `IMPORTANT DSL GATE CORRECTION REQUIRED (Attempt ${attempt + 1}/${MAX_GATE_ATTEMPTS}):
+Your previous extraction was REJECTED by the strict verification gate:
+"${gateResult.error}"
+
+You must autonomously correct this extraction now:
+1. Investor 'name' MUST be the exact corporate/fund brand name (e.g. "Sequoia", "Y Combinator", "Wavemaker Partners") found directly on the cited pages.
+2. DO NOT output a composite description, category name, or multi-entity string with parentheses or slashes.
+3. Use only portfolio companies, check sizes, and target stages that actually appear in the findings and cited URLs.`;
+
+        // Record failed gate trial with candidate and rejection reason
+        await recordAgentTrial({
+          runId: run.id,
+          dealId,
+          assetClass: "VC",
+          stage: "RESEARCH_STRUCTURE",
+          trialNumber: attempt,
+          status: "FAILED_GATE",
+          entityName: investor.name,
+          inputSummary: body.hint,
+          extractedPayload: investor,
+          failureReason: gateResult.error || "Failed DSL grounding gate audit.",
+          promptFeedback: nextFeedback,
+          diagnosticsJson: gateResult.report,
+          durationMs: Date.now() - trialStart,
+        });
 
         // Record rejection in Prompt Improvement database
         await recordPromptImprovementSuggestion({
@@ -279,16 +321,7 @@ export async function POST(
           investor = await structureVCInvestorFindings(
             body.hint,
             { findings: body.findings, citedUrls: body.citedUrls },
-            {
-              feedbackPrompt: `IMPORTANT DSL GATE CORRECTION REQUIRED (Attempt ${attempt + 1}/${MAX_GATE_ATTEMPTS}):
-Your previous extraction was REJECTED by the strict verification gate:
-"${gateResult.error}"
-
-You must autonomously correct this extraction now:
-1. Investor 'name' MUST be the exact corporate/fund brand name (e.g. "Sequoia", "Y Combinator", "Wavemaker Partners") found directly on the cited pages.
-2. DO NOT output a composite description, category name, or multi-entity string with parentheses or slashes.
-3. Use only portfolio companies, check sizes, and target stages that actually appear in the findings and cited URLs.`,
-            }
+            { feedbackPrompt: nextFeedback }
           );
         }
       }

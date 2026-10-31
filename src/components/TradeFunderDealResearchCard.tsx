@@ -2,9 +2,10 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Search, Loader2, Sparkles, Globe2, Building2, CheckCircle2, FileCode, ExternalLink, ChevronDown, ChevronUp } from "lucide-react";
+import { Search, Loader2, Sparkles, Globe2, Building2, CheckCircle2, FileCode, ExternalLink, ChevronDown, ChevronUp, History } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, Button, Badge } from "@/components/ui/primitives";
 import { TradeFunderInspectorModal } from "@/components/TradeFunderInspectorModal";
+import { AgentTrialsAuditDrawer } from "@/components/AgentTrialsAuditDrawer";
 
 export function TradeFunderDealResearchCard({
   dealId,
@@ -26,6 +27,7 @@ export function TradeFunderDealResearchCard({
   const [researchedFunderData, setResearchedFunderData] = useState<any | null>(null);
   const [isInspectorOpen, setIsInspectorOpen] = useState(false);
   const [showFullFindings, setShowFullFindings] = useState(false);
+  const [showTrialsDrawer, setShowTrialsDrawer] = useState(false);
 
   async function handleDealResearch(e?: React.FormEvent) {
     if (e) e.preventDefault();
@@ -102,7 +104,17 @@ export function TradeFunderDealResearchCard({
             <Building2 className="h-4 w-4 text-purple-600 dark:text-purple-400" />
             <CardTitle>Autonomous Trade Funder Research for this Deal</CardTitle>
           </div>
-          <Badge tone="purple">Live Web + LLM Agent</Badge>
+          <div className="flex items-center gap-2">
+            <Badge tone="purple">Live Web + LLM Agent</Badge>
+            <button
+              type="button"
+              onClick={() => setShowTrialsDrawer(true)}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border border-purple-200 dark:border-purple-800 bg-white/80 dark:bg-slate-900 text-purple-700 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-950/50 transition-colors shadow-xs"
+            >
+              <History className="h-3.5 w-3.5 text-purple-500" />
+              <span>Trials &amp; Grounding Audit</span>
+            </button>
+          </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -149,7 +161,25 @@ export function TradeFunderDealResearchCard({
           </div>
         )}
 
-        {error && <p className="text-xs text-red-600">{error}</p>}
+        {error && (
+          <div className="p-3 rounded-lg border border-red-200 bg-red-50/70 dark:border-red-900/60 dark:bg-red-950/30 text-xs text-red-700 dark:text-red-300 flex items-center justify-between gap-2">
+            <span>{error}</span>
+            <button
+              type="button"
+              onClick={() => setShowTrialsDrawer(true)}
+              className="underline font-semibold shrink-0 text-red-800 dark:text-red-200 hover:text-red-950"
+            >
+              View Failure Trials ({">"})
+            </button>
+          </div>
+        )}
+
+        <AgentTrialsAuditDrawer
+          dealId={dealId}
+          assetClass="TRADE"
+          isOpen={showTrialsDrawer}
+          onClose={() => setShowTrialsDrawer(false)}
+        />
         {successNotice && (
           <div className="rounded-lg border border-emerald-200 bg-emerald-50/80 p-3 text-xs dark:border-emerald-900/60 dark:bg-emerald-950/30 text-emerald-900 dark:text-emerald-200 space-y-2">
             <div className="flex items-center justify-between">

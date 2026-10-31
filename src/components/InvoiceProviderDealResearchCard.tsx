@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Search, Loader2, Sparkles, Building2, CheckCircle2 } from "lucide-react";
+import { Search, Loader2, Sparkles, Building2, CheckCircle2, History } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, Button, Badge } from "@/components/ui/primitives";
+import { AgentTrialsAuditDrawer } from "@/components/AgentTrialsAuditDrawer";
 
 export function InvoiceProviderDealResearchCard({
   dealId,
@@ -26,6 +27,7 @@ export function InvoiceProviderDealResearchCard({
   const [stepLabel, setStepLabel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [successNotice, setSuccessNotice] = useState<string | null>(null);
+  const [showTrialsDrawer, setShowTrialsDrawer] = useState(false);
 
   const fallbackHint =
     defaultHint ||
@@ -97,7 +99,17 @@ export function InvoiceProviderDealResearchCard({
             <Building2 className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />
             <CardTitle>Autonomous Factoring Provider Research for this Deal</CardTitle>
           </div>
-          <Badge tone="blue">Live Web + LLM Agent</Badge>
+          <div className="flex items-center gap-2">
+            <Badge tone="blue">Live Web + LLM Agent</Badge>
+            <button
+              type="button"
+              onClick={() => setShowTrialsDrawer(true)}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border border-indigo-200 dark:border-indigo-800 bg-white/80 dark:bg-slate-900 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-950/50 transition-colors shadow-xs"
+            >
+              <History className="h-3.5 w-3.5 text-indigo-500" />
+              <span>Trials &amp; Grounding Audit</span>
+            </button>
+          </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -144,13 +156,31 @@ export function InvoiceProviderDealResearchCard({
           </div>
         )}
 
-        {error && <p className="text-xs text-red-600">{error}</p>}
+        {error && (
+          <div className="p-3 rounded-lg border border-red-200 bg-red-50/70 dark:border-red-900/60 dark:bg-red-950/30 text-xs text-red-700 dark:text-red-300 flex items-center justify-between gap-2">
+            <span>{error}</span>
+            <button
+              type="button"
+              onClick={() => setShowTrialsDrawer(true)}
+              className="underline font-semibold shrink-0 text-red-800 dark:text-red-200 hover:text-red-950"
+            >
+              View Failure Trials ({">"})
+            </button>
+          </div>
+        )}
         {successNotice && (
           <div className="rounded-lg border border-emerald-200 bg-emerald-50/80 p-3 text-xs dark:border-emerald-900/60 dark:bg-emerald-950/30 text-emerald-900 dark:text-emerald-200 flex items-center gap-2">
             <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
             <span>{successNotice}</span>
           </div>
         )}
+
+        <AgentTrialsAuditDrawer
+          dealId={dealId}
+          assetClass="INVOICE"
+          isOpen={showTrialsDrawer}
+          onClose={() => setShowTrialsDrawer(false)}
+        />
       </CardContent>
     </Card>
   );

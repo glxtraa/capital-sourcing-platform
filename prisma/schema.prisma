@@ -1045,3 +1045,35 @@ model PromptImprovementSuggestion {
   @@index([createdAt])
 }
 
+// ---------------------------------------------------------------------------
+// Agent Execution Trials — persistent log of every agent trial/attempt,
+// recording intermediate failures, hallucinated candidates, DSL Grounding
+// Gate rejections, corrective prompts, and recovery outcomes.
+// ---------------------------------------------------------------------------
+
+model AgentExecutionTrial {
+  id               String   @id @default(cuid())
+  runId            String?
+  dealId           String?
+  assetClass       String   // "INVOICE" | "TRADE" | "VC"
+  stage            String   // "RESEARCH_STRUCTURE" | "RESEARCH_SEARCH" | "DOCUMENT_EXTRACTION"
+  trialNumber      Int      // 1, 2, 3...
+  status           String   // "SUCCESS" | "FAILED_GATE" | "FAILED_SCHEMA" | "FAILED_HTTP" | "RETRYING"
+  entityName       String?
+  inputSummary     String?  @db.Text
+  extractedPayload Json?
+  failureReason    String?  @db.Text
+  promptFeedback   String?  @db.Text
+  diagnosticsJson  Json?
+  modelSlug        String?
+  durationMs       Int?
+  createdAt        DateTime @default(now())
+
+  @@index([dealId])
+  @@index([runId])
+  @@index([assetClass, stage])
+  @@index([status])
+  @@index([createdAt])
+}
+
+
