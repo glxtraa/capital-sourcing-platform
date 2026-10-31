@@ -23,7 +23,7 @@ interface MatchableProvider {
   lastVerified: Date | string | null;
   sources?: string[];
   pricingProvenance?: any;
-  criteriaProvenance?: any[];
+  criteriaProvenance?: any;
 }
 
 /**

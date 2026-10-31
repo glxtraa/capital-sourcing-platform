@@ -212,6 +212,7 @@ model Provider {
   sources                     String[]
   notes                       String?
   financingStructuresSupported FinancingStructureType[]
+  criteriaProvenance          Json?
   documentsRequired           ProviderDocumentRequirement[]
   matches                     ProviderMatch[]
   onboardings                 ProviderOnboarding[]
@@ -574,6 +575,7 @@ model TradeFunder {
   applicationUrl              String?
   rateEvidenceSnippet         String?
   pricingProvenance           Json?
+  criteriaProvenance          Json?
   deskContacts                Json?
   documentsRequired           TradeFunderDocumentRequirement[]
   matches                     TradeFunderMatchModel[]

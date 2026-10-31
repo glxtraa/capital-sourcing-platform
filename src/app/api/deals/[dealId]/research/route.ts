@@ -200,14 +200,26 @@ You must autonomously correct this extraction now:
     }
 
     const provider = gateResult.cleanData;
+    const { documentsRequired, criteriaProvenance, ...providerData } = provider;
     const lastVerified = provider.lastVerified ? new Date(provider.lastVerified) : null;
+    const cleanCriteria = criteriaProvenance ? JSON.parse(JSON.stringify(criteriaProvenance)) : undefined;
+    const docsCreate = Array.isArray(documentsRequired)
+      ? documentsRequired.map((d: any) => ({ code: d.code, note: d.note ?? null }))
+      : [];
+
     await db.provider.upsert({
       where: { id: provider.id },
-      create: { ...provider, lastVerified, documentsRequired: { create: provider.documentsRequired } },
-      update: {
-        ...provider,
+      create: {
+        ...providerData,
         lastVerified,
-        documentsRequired: { deleteMany: {}, create: provider.documentsRequired },
+        criteriaProvenance: cleanCriteria,
+        documentsRequired: { create: docsCreate },
+      },
+      update: {
+        ...providerData,
+        lastVerified,
+        criteriaProvenance: cleanCriteria,
+        documentsRequired: { deleteMany: {}, create: docsCreate },
       },
     });
     await db.researchRun.update({
