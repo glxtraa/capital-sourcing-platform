@@ -5,6 +5,7 @@ import { buildMatchInputs } from "@/lib/matching";
 import { researchProviderFindings, structureProviderFindings } from "@/agents/research-agent";
 import { testSourceLinks } from "@/lib/link-verifier";
 import { gateInvoiceProvider } from "@/dsl/compiler";
+import { recordPromptImprovementSuggestion } from "@/lib/prompt-improvement";
 
 /**
  * One step of "research a new provider because matching found none", per
@@ -96,27 +97,73 @@ export async function POST(req: Request, { params }: { params: Promise<{ dealId:
   }
 
   try {
-    const rawProvider = await structureProviderFindings(body.hint, {
+    let rawProvider = await structureProviderFindings(body.hint, {
       findings: body.findings,
       citedUrls: body.citedUrls,
     });
 
-    // 1. Audit and verify source links with keyword grounding
-    const entityKeywords = [rawProvider.name, rawProvider.id.split("-")[0]].filter(Boolean);
-    const linkAudit = body.citedUrls.length > 0
-      ? await testSourceLinks(body.citedUrls, 5, 4000, { requiredKeywords: entityKeywords })
-      : [];
-    const workingUrls = linkAudit.filter((l) => l.ok).map((l) => l.url);
-    const pageTexts = linkAudit.map((l) => `${l.cachedTitle ?? ""} ${l.cachedSnippet ?? ""}`).filter(Boolean);
+    let gateResult: ReturnType<typeof gateInvoiceProvider> | null = null;
+    let workingUrls: string[] = [];
+    let pageTexts: string[] = [];
 
-    // 2. Strict DSL Grounding Gate: verify all extracted data against cited source pages
-    const gateResult = gateInvoiceProvider(
-      { ...rawProvider, sources: workingUrls.length > 0 ? workingUrls : rawProvider.sources },
-      pageTexts
-    );
+    // Autonomous Gate-Feedback Loop: retry up to 3 times before failing back to user
+    const MAX_GATE_ATTEMPTS = 3;
+    for (let attempt = 1; attempt <= MAX_GATE_ATTEMPTS; attempt++) {
+      // 1. Audit and verify source links with keyword grounding
+      const entityKeywords = [rawProvider.name, rawProvider.id.split("-")[0]].filter(Boolean);
+      const linkAudit = body.citedUrls.length > 0
+        ? await testSourceLinks(body.citedUrls, 5, 4000, { requiredKeywords: entityKeywords })
+        : [];
+      workingUrls = linkAudit.filter((l) => l.ok).map((l) => l.url);
+      pageTexts = linkAudit.map((l) => `${l.cachedTitle ?? ""} ${l.cachedSnippet ?? ""}`).filter(Boolean);
 
-    if (!gateResult.passed || !gateResult.cleanData) {
-      throw new Error(gateResult.error || "Failed DSL grounding gate audit.");
+      // 2. Strict DSL Grounding Gate: verify all extracted data against cited source pages
+      gateResult = gateInvoiceProvider(
+        { ...rawProvider, sources: workingUrls.length > 0 ? workingUrls : rawProvider.sources },
+        pageTexts
+      );
+
+      if (gateResult.passed && gateResult.cleanData) {
+        break; // Passed strict verification!
+      }
+
+      // Rejection: Record into Prompt Improvement database for continuous audit
+      await recordPromptImprovementSuggestion({
+        agentType: "INVOICE_RESEARCH",
+        promptId: "research.md",
+        triggerEvent: "DSL_GROUNDING_GATE_REJECTION",
+        failedInput: rawProvider.name,
+        rejectionReason: gateResult.error || "Failed DSL grounding gate audit.",
+        suggestedRule: `Provider name "${rawProvider.name}" failed grounding against cited source pages. Ensure agent extracts the exact corporate/brand name of a single legal entity, not a category/composite label.`,
+        contextJson: {
+          attempt,
+          hint: body.hint,
+          citedUrls: body.citedUrls,
+          dealId,
+        },
+      });
+
+      if (attempt < MAX_GATE_ATTEMPTS) {
+        console.warn(`[deals/research] Attempt ${attempt} failed DSL gate: ${gateResult.error}. Auto-retrying agent with gate feedback...`);
+        rawProvider = await structureProviderFindings(
+          body.hint,
+          { findings: body.findings, citedUrls: body.citedUrls },
+          {
+            feedbackPrompt: `IMPORTANT DSL GATE CORRECTION REQUIRED (Attempt ${attempt + 1}/${MAX_GATE_ATTEMPTS}):
+Your previous extraction was REJECTED by the strict verification gate:
+"${gateResult.error}"
+
+You must autonomously correct this extraction now:
+1. Provider 'name' MUST be the exact corporate/brand name of a single legal institution (e.g. "WorldFirst", "Bettr", "Stenn", "HSBC") verified directly on the cited web pages.
+2. DO NOT output a composite description, category name, or multi-institution string with parentheses or slashes (e.g. NEVER output "Embedded Finance Factoring (via WorldFirst / Bettr)").
+3. Use only claims, minimums, and jurisdictions that actually appear in the findings and cited URLs.`,
+          }
+        );
+      }
+    }
+
+    if (!gateResult || !gateResult.passed || !gateResult.cleanData) {
+      throw new Error(gateResult?.error || "Failed DSL grounding gate audit after autonomous retry attempts.");
     }
 
     const provider = gateResult.cleanData;

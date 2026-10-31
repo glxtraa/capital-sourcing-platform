@@ -7,6 +7,7 @@ import {
 } from "@/agents/trade/trade-research-agent";
 import { testSourceLinks } from "@/lib/link-verifier";
 import { gateTradeFunder } from "@/dsl/compiler";
+import { recordPromptImprovementSuggestion } from "@/lib/prompt-improvement";
 
 export const maxDuration = 300;
 
@@ -97,27 +98,72 @@ export async function POST(
   }
 
   try {
-    const rawFunder = await structureTradeFunderFindings(body.hint, {
+    let rawFunder = await structureTradeFunderFindings(body.hint, {
       findings: body.findings,
       citedUrls: body.citedUrls,
     });
 
-    // 1. Audit and verify source links with keyword grounding
-    const funderKeywords = [rawFunder.name, rawFunder.id.split("-")[0]].filter(Boolean);
-    const linkAudit = body.citedUrls.length > 0
-      ? await testSourceLinks(body.citedUrls, 5, 4000, { requiredKeywords: funderKeywords })
-      : [];
-    const workingUrls = linkAudit.filter((l) => l.ok).map((l) => l.url);
-    const pageTexts = linkAudit.map((l) => `${l.cachedTitle ?? ""} ${l.cachedSnippet ?? ""}`).filter(Boolean);
+    let gateResult: ReturnType<typeof gateTradeFunder> | null = null;
+    let workingUrls: string[] = [];
+    let pageTexts: string[] = [];
 
-    // 2. Strict DSL Grounding Gate: verify all extracted data against cited source pages
-    const gateResult = gateTradeFunder(
-      { ...rawFunder, sources: workingUrls.length > 0 ? workingUrls : rawFunder.sources },
-      pageTexts
-    );
+    const MAX_GATE_ATTEMPTS = 3;
+    for (let attempt = 1; attempt <= MAX_GATE_ATTEMPTS; attempt++) {
+      // 1. Audit and verify source links with keyword grounding
+      const funderKeywords = [rawFunder.name, rawFunder.id.split("-")[0]].filter(Boolean);
+      const linkAudit = body.citedUrls.length > 0
+        ? await testSourceLinks(body.citedUrls, 5, 4000, { requiredKeywords: funderKeywords })
+        : [];
+      workingUrls = linkAudit.filter((l) => l.ok).map((l) => l.url);
+      pageTexts = linkAudit.map((l) => `${l.cachedTitle ?? ""} ${l.cachedSnippet ?? ""}`).filter(Boolean);
 
-    if (!gateResult.passed || !gateResult.cleanData) {
-      throw new Error(gateResult.error || "Failed DSL grounding gate audit.");
+      // 2. Strict DSL Grounding Gate: verify all extracted data against cited source pages
+      gateResult = gateTradeFunder(
+        { ...rawFunder, sources: workingUrls.length > 0 ? workingUrls : rawFunder.sources },
+        pageTexts
+      );
+
+      if (gateResult.passed && gateResult.cleanData) {
+        break; // Passed strict verification!
+      }
+
+      // Record rejection in Prompt Improvement database
+      await recordPromptImprovementSuggestion({
+        agentType: "TRADE_RESEARCH",
+        promptId: "trade-research.md",
+        triggerEvent: "DSL_GROUNDING_GATE_REJECTION",
+        failedInput: rawFunder.name,
+        rejectionReason: gateResult.error || "Failed DSL grounding gate audit.",
+        suggestedRule: `Trade funder name "${rawFunder.name}" failed grounding against cited source pages. Ensure agent extracts exact corporate/bank name without category labels.`,
+        contextJson: {
+          attempt,
+          hint: body.hint,
+          citedUrls: body.citedUrls,
+          dealId,
+        },
+      });
+
+      if (attempt < MAX_GATE_ATTEMPTS) {
+        console.warn(`[trade/research] Attempt ${attempt} failed DSL gate: ${gateResult.error}. Auto-retrying agent with gate feedback...`);
+        rawFunder = await structureTradeFunderFindings(
+          body.hint,
+          { findings: body.findings, citedUrls: body.citedUrls },
+          {
+            feedbackPrompt: `IMPORTANT DSL GATE CORRECTION REQUIRED (Attempt ${attempt + 1}/${MAX_GATE_ATTEMPTS}):
+Your previous extraction was REJECTED by the strict verification gate:
+"${gateResult.error}"
+
+You must autonomously correct this extraction now:
+1. Funder 'name' MUST be the exact corporate/institutional brand name (e.g. "Bladex", "Rabobank", "Stenn") found on the cited web pages.
+2. DO NOT output a composite description, category name, or multi-institution string with parentheses or slashes.
+3. Use only claims, minimums, and commodities that actually appear in the findings and cited URLs.`,
+          }
+        );
+      }
+    }
+
+    if (!gateResult || !gateResult.passed || !gateResult.cleanData) {
+      throw new Error(gateResult?.error || "Failed DSL grounding gate audit after autonomous retry attempts.");
     }
 
     const funder = gateResult.cleanData;

@@ -227,7 +227,7 @@ export async function researchVCInvestorFindings(
 export async function structureVCInvestorFindings(
   investorNameOrHint: string,
   { findings, citedUrls }: VCInvestorFindings,
-  opts: CallOptions = {},
+  opts: CallOptions & { feedbackPrompt?: string } = {},
 ): Promise<StartupInvestorDTO> {
   const client = getOpenRouterClient();
   const primaryModel = opts.model ?? EXTRACTION_MODEL;
@@ -239,6 +239,7 @@ export async function structureVCInvestorFindings(
       content:
         `Here is your research on "${investorNameOrHint}":\n\n${findings}\n\n` +
         (citedUrls.length > 0 ? `URLs cited while researching:\n${citedUrls.join("\n")}\n\n` : "") +
+        (opts.feedbackPrompt ? `\n\n${opts.feedbackPrompt}\n\n` : "") +
         `Now record this as a complete StartupInvestor entry per the schema. Use null or "UNVERIFIED_NEEDS_CHECK" ` +
         `for any field not backed by real sourced data. Ensure websiteUrl, contactEmail, headquarters, and keyContacts are populated with genuine data. Do not include deal-specific details in stored fields.`,
     },

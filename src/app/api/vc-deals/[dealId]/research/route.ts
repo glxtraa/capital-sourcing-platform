@@ -10,6 +10,7 @@ import { reconcileStartupExtractions } from "@/agents/vc/vc-reconciliation";
 import { researchStartupCompetitors } from "@/agents/vc/vc-competitor-agent";
 import { testSourceLinks } from "@/lib/link-verifier";
 import { gateStartupInvestor } from "@/dsl/compiler";
+import { recordPromptImprovementSuggestion } from "@/lib/prompt-improvement";
 import type { StartupDocumentExtraction, StartupInvestorDTO } from "@/dsl/vc";
 
 function cleanJson<T>(value: T): T {
@@ -208,47 +209,92 @@ export async function POST(
     }
 
     try {
-      const investor = await structureVCInvestorFindings(body.hint, {
+      let investor = await structureVCInvestorFindings(body.hint, {
         findings: body.findings,
         citedUrls: body.citedUrls,
       });
 
-      // Filter out non-VC / non-startup equity organizations (DFIs, sovereign grant funds, commercial real estate developers)
-      const nonVCPattern = /does not invest in (?:startups|equity|early-stage)|only (?:funds large-scale infrastructure|provides grants to non-profit|engaged in commercial real estate)/i;
-      const gatingNotes = `${investor.gatingFactor || ""} ${investor.notes || ""}`;
-      if (nonVCPattern.test(gatingNotes) || (investor.targetStages && investor.targetStages.length === 0)) {
-        await db.startupResearchRun.update({
-          where: { id: run.id },
-          data: {
-            status: "SUCCEEDED",
-            outputSummary: `Researched "${investor.name}", but identified as ineligible non-VC / sovereign grant / real-estate fund. Not added to startup investor catalog.`,
-            finishedAt: new Date(),
+      let gateResult: ReturnType<typeof gateStartupInvestor> | null = null;
+      let workingUrls: string[] = [];
+      let pageTexts: string[] = [];
+
+      const MAX_GATE_ATTEMPTS = 3;
+      for (let attempt = 1; attempt <= MAX_GATE_ATTEMPTS; attempt++) {
+        // Filter out non-VC / non-startup equity organizations
+        const nonVCPattern = /does not invest in (?:startups|equity|early-stage)|only (?:funds large-scale infrastructure|provides grants to non-profit|engaged in commercial real estate)/i;
+        const gatingNotes = `${investor.gatingFactor || ""} ${investor.notes || ""}`;
+        if (nonVCPattern.test(gatingNotes) || (investor.targetStages && investor.targetStages.length === 0)) {
+          await db.startupResearchRun.update({
+            where: { id: run.id },
+            data: {
+              status: "SUCCEEDED",
+              outputSummary: `Researched "${investor.name}", but identified as ineligible non-VC / sovereign grant / real-estate fund. Not added to startup investor catalog.`,
+              finishedAt: new Date(),
+            },
+          });
+          await db.startupDeal.update({ where: { id: dealId }, data: { status: "READY_TO_MATCH" } });
+          return NextResponse.json({
+            investorId: null,
+            investorName: investor.name,
+            excludedNonVC: true,
+            reason: investor.gatingFactor || "Entity does not invest in startups or venture rounds.",
+          });
+        }
+
+        // Audit cited URLs and apply strict DSL grounding gate
+        const investorKeywords = [investor.name, investor.id.split("-")[0]].filter(Boolean);
+        const linkAudit = body.citedUrls.length > 0
+          ? await testSourceLinks(body.citedUrls, 5, 4000, { requiredKeywords: investorKeywords })
+          : [];
+        workingUrls = linkAudit.filter((l) => l.ok).map((l) => l.url);
+        pageTexts = linkAudit.map((l) => `${l.cachedTitle ?? ""} ${l.cachedSnippet ?? ""}`).filter(Boolean);
+
+        gateResult = gateStartupInvestor(
+          { ...investor, sources: workingUrls.length > 0 ? workingUrls : investor.sources },
+          pageTexts
+        );
+
+        if (gateResult.passed && gateResult.cleanData) {
+          break; // Passed strict verification!
+        }
+
+        // Record rejection in Prompt Improvement database
+        await recordPromptImprovementSuggestion({
+          agentType: "VC_RESEARCH",
+          promptId: "vc-research.md",
+          triggerEvent: "DSL_GROUNDING_GATE_REJECTION",
+          failedInput: investor.name,
+          rejectionReason: gateResult.error || "Failed DSL grounding gate audit.",
+          suggestedRule: `Startup investor name "${investor.name}" failed grounding against cited source pages. Ensure agent extracts exact venture fund or angel syndicate name without category labels.`,
+          contextJson: {
+            attempt,
+            hint: body.hint,
+            citedUrls: body.citedUrls,
+            dealId,
           },
         });
-        await db.startupDeal.update({ where: { id: dealId }, data: { status: "READY_TO_MATCH" } });
-        return NextResponse.json({
-          investorId: null,
-          investorName: investor.name,
-          excludedNonVC: true,
-          reason: investor.gatingFactor || "Entity does not invest in startups or venture rounds.",
-        });
+
+        if (attempt < MAX_GATE_ATTEMPTS) {
+          console.warn(`[vc/research] Attempt ${attempt} failed DSL gate: ${gateResult.error}. Auto-retrying agent with gate feedback...`);
+          investor = await structureVCInvestorFindings(
+            body.hint,
+            { findings: body.findings, citedUrls: body.citedUrls },
+            {
+              feedbackPrompt: `IMPORTANT DSL GATE CORRECTION REQUIRED (Attempt ${attempt + 1}/${MAX_GATE_ATTEMPTS}):
+Your previous extraction was REJECTED by the strict verification gate:
+"${gateResult.error}"
+
+You must autonomously correct this extraction now:
+1. Investor 'name' MUST be the exact corporate/fund brand name (e.g. "Sequoia", "Y Combinator", "Wavemaker Partners") found directly on the cited pages.
+2. DO NOT output a composite description, category name, or multi-entity string with parentheses or slashes.
+3. Use only portfolio companies, check sizes, and target stages that actually appear in the findings and cited URLs.`,
+            }
+          );
+        }
       }
 
-      // Audit cited URLs and apply strict DSL grounding gate
-      const investorKeywords = [investor.name, investor.id.split("-")[0]].filter(Boolean);
-      const linkAudit = body.citedUrls.length > 0
-        ? await testSourceLinks(body.citedUrls, 5, 4000, { requiredKeywords: investorKeywords })
-        : [];
-      const workingUrls = linkAudit.filter((l) => l.ok).map((l) => l.url);
-      const pageTexts = linkAudit.map((l) => `${l.cachedTitle ?? ""} ${l.cachedSnippet ?? ""}`).filter(Boolean);
-
-      const gateResult = gateStartupInvestor(
-        { ...investor, sources: workingUrls.length > 0 ? workingUrls : investor.sources },
-        pageTexts
-      );
-
-      if (!gateResult.passed || !gateResult.cleanData) {
-        throw new Error(gateResult.error || "Failed DSL grounding gate audit.");
+      if (!gateResult || !gateResult.passed || !gateResult.cleanData) {
+        throw new Error(gateResult?.error || "Failed DSL grounding gate audit after autonomous retry attempts.");
       }
 
       const sanitized = sanitizeInvestorData(gateResult.cleanData);

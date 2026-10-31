@@ -35,30 +35,100 @@ function verifyNumeric(num: number | null | undefined, text: string): { verified
   return { verified: false };
 }
 
+const GENERIC_CATEGORY_PHRASES = new Set([
+  "embedded finance",
+  "embedded finance factoring",
+  "factoring",
+  "factoring provider",
+  "factoring solutions",
+  "invoice factoring",
+  "invoice discounting",
+  "trade finance",
+  "trade credit",
+  "receivables finance",
+  "receivables factoring",
+  "cross border factoring",
+  "supply chain finance",
+  "reverse factoring",
+  "venture capital",
+  "working capital",
+  "fintech platform",
+  "capital sourcing",
+  "commercial finance",
+  "growth capital",
+  "asset based lending",
+]);
+
 /**
  * Checks whether a text token or entity name matches in the corpus text.
+ * Resilient against parenthetical notes (e.g. "WorldFirst (Ant Group)"),
+ * qualifiers (e.g. "Stenn - Cross Border"), and legal suffixes,
+ * while strictly disallowing purely generic financial category terms.
  */
 function verifyText(term: string | null | undefined, text: string): { verified: boolean; snippet?: string } {
   if (!term || term.trim().length === 0) return { verified: true };
   const cleanTerm = term.trim();
-  // Try entity name regex first
-  const entityRegex = buildEntityNameRegex(cleanTerm);
-  const entityMatch = text.match(entityRegex);
-  if (entityMatch) {
-    const idx = entityMatch.index ?? 0;
-    const start = Math.max(0, idx - 40);
-    const end = Math.min(text.length, idx + entityMatch[0].length + 40);
-    return { verified: true, snippet: text.slice(start, end).replace(/\s+/g, " ").trim() };
+
+  // Helper to test a single candidate string against the corpus
+  const testCandidate = (cand: string): { verified: boolean; snippet?: string } | null => {
+    const trimmed = cand.trim();
+    if (trimmed.length < 2) return null;
+    const lower = trimmed.toLowerCase();
+    // Strictly reject if candidate is a generic financial category phrase
+    if (GENERIC_CATEGORY_PHRASES.has(lower)) return null;
+
+    // 1. Try entity name regex (handles legal suffixes like Ltd, Inc, Pte, etc.)
+    const entityRegex = buildEntityNameRegex(trimmed);
+    const entityMatch = text.match(entityRegex);
+    if (entityMatch) {
+      const idx = entityMatch.index ?? 0;
+      const start = Math.max(0, idx - 40);
+      const end = Math.min(text.length, idx + entityMatch[0].length + 40);
+      return { verified: true, snippet: text.slice(start, end).replace(/\s+/g, " ").trim() };
+    }
+
+    // 2. Substring match
+    const normTerm = normalizeTextForMatching(trimmed);
+    const normText = normalizeTextForMatching(text);
+    if (normTerm.length >= 3 && normText.includes(normTerm)) {
+      const idx = normText.indexOf(normTerm);
+      const start = Math.max(0, idx - 40);
+      const end = Math.min(text.length, idx + normTerm.length + 40);
+      return { verified: true, snippet: text.slice(start, end).replace(/\s+/g, " ").trim() };
+    }
+
+    return null;
+  };
+
+  // 1. Try full exact term first
+  const fullRes = testCandidate(cleanTerm);
+  if (fullRes) return fullRes;
+
+  // 2. Resilient token check: extract core entity name without parentheticals / qualifiers
+  // e.g. "WorldFirst (Ant Group)" -> core: "WorldFirst"
+  // e.g. "Tradeteq (UK)" -> core: "Tradeteq"
+  // e.g. "Stenn - Cross Border" -> core: "Stenn"
+  // e.g. "Bettr (by WorldFirst)" -> core: "Bettr"
+  const candidatesToCheck: string[] = [];
+
+  const withoutParens = cleanTerm.replace(/\s*[\(\[][^\)\]]+[\)\]]/g, "").trim();
+  if (withoutParens && withoutParens !== cleanTerm) {
+    // If the part before parens is NOT a generic category, add it
+    if (!GENERIC_CATEGORY_PHRASES.has(withoutParens.toLowerCase())) {
+      candidatesToCheck.push(withoutParens);
+    }
   }
 
-  // Fallback to substring match
-  const normTerm = normalizeTextForMatching(cleanTerm);
-  const normText = normalizeTextForMatching(text);
-  if (normText.includes(normTerm)) {
-    const idx = normText.indexOf(normTerm);
-    const start = Math.max(0, idx - 40);
-    const end = Math.min(text.length, idx + normTerm.length + 40);
-    return { verified: true, snippet: text.slice(start, end).replace(/\s+/g, " ").trim() };
+  const withoutHyphen = cleanTerm.split(/\s+[-–—|]\s+/)[0]?.trim();
+  if (withoutHyphen && withoutHyphen !== cleanTerm && !candidatesToCheck.includes(withoutHyphen)) {
+    if (!GENERIC_CATEGORY_PHRASES.has(withoutHyphen.toLowerCase())) {
+      candidatesToCheck.push(withoutHyphen);
+    }
+  }
+
+  for (const cand of candidatesToCheck) {
+    const res = testCandidate(cand);
+    if (res) return res;
   }
 
   return { verified: false };

@@ -1018,3 +1018,30 @@ model DealDslRevision {
   @@index([dealId, dslType])
   @@index([createdAt])
 }
+
+// ---------------------------------------------------------------------------
+// Autonomous Agent Feedback & Prompt Improvement Suggestions — records
+// DSL Grounding Gate rejections and LLM structural errors so prompt engineers
+// and self-improving meta-agents can audit failure patterns without breaking
+// the user interface.
+// ---------------------------------------------------------------------------
+
+model PromptImprovementSuggestion {
+  id              String   @id @default(cuid())
+  agentType       String   // "INVOICE_RESEARCH" | "TRADE_RESEARCH" | "VC_RESEARCH" | "EXTRACTION"
+  promptId        String   // "research.md" | "trade-research.md" | "vc-research.md" | "extraction.md"
+  triggerEvent    String   // "DSL_GROUNDING_GATE_REJECTION" | "LINK_AUDIT_FAILURE" | "SCHEMA_VALIDATION_FAILURE"
+  failedInput     String?  @db.Text
+  rejectionReason String   @db.Text
+  suggestedRule   String   @db.Text
+  contextJson     Json?
+  status          String   @default("OPEN") // "OPEN" | "REVIEWED" | "APPLIED" | "DISMISSED"
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([agentType])
+  @@index([promptId])
+  @@index([status])
+  @@index([createdAt])
+}
+

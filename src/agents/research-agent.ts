@@ -85,9 +85,21 @@ export async function researchProviderFindings(
 export async function structureProviderFindings(
   providerNameOrHint: string,
   { findings, citedUrls }: ProviderFindings,
-  opts: CallOptions = {},
+  opts: CallOptions & { feedbackPrompt?: string } = {},
 ): Promise<ProviderDTO> {
   const client = getOpenRouterClient();
+
+  const userContent =
+    `Here is your research on "${providerNameOrHint}":\n\n${findings}\n\n` +
+    (citedUrls.length > 0 ? `URLs you cited while researching:\n${citedUrls.join("\n")}\n\n` : "") +
+    (opts.feedbackPrompt ? `\n\n${opts.feedbackPrompt}\n\n` : "") +
+    `Now record this as a complete Provider entry per the schema. Every field must be filled — ` +
+    `use null or "UNVERIFIED_NEEDS_CHECK" for anything you don't have real, sourced data for. ` +
+    `Never fabricate a fee, minimum, or document requirement. This provider record is shared ` +
+    `across every deal, not just the one that triggered this research — if the findings above ` +
+    `mention the triggering deal, borrower, or any counterparty by name, generalize that into a ` +
+    `provider-level fact (e.g. "an existing banking relationship is an advantage") rather than ` +
+    `copying the name or deal-specific detail into any field.`;
 
   const structureResponse = await client.chat.completions.create(
     {
@@ -97,16 +109,7 @@ export async function structureProviderFindings(
       { role: "system", content: SYSTEM_PROMPT },
       {
         role: "user",
-        content:
-          `Here is your research on "${providerNameOrHint}":\n\n${findings}\n\n` +
-          (citedUrls.length > 0 ? `URLs you cited while researching:\n${citedUrls.join("\n")}\n\n` : "") +
-          `Now record this as a complete Provider entry per the schema. Every field must be filled — ` +
-          `use null or "UNVERIFIED_NEEDS_CHECK" for anything you don't have real, sourced data for. ` +
-          `Never fabricate a fee, minimum, or document requirement. This provider record is shared ` +
-          `across every deal, not just the one that triggered this research — if the findings above ` +
-          `mention the triggering deal, borrower, or any counterparty by name, generalize that into a ` +
-          `provider-level fact (e.g. "an existing banking relationship is an advantage") rather than ` +
-          `copying the name or deal-specific detail into any field.`,
+        content: userContent,
       },
     ],
     },
