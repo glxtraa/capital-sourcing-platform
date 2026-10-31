@@ -41,13 +41,18 @@ async function main() {
   // 2. Documents
   const docs = (data.uploadedDocument || []).filter((d: any) => d.dealId === dealId);
   for (const doc of docs) {
+    let blobUrl = doc.blobUrl;
+    if (blobUrl.includes("O7IaKoqsReduSHArvxuxst5fp4QWHs")) {
+      blobUrl = blobUrl.replace("O7IaKoqsReduSHArvxuxst5fp4QWHs", "t3vv3PWiacgyUMd395xuL1YYWS4OcV");
+    }
+
     await db.uploadedDocument.upsert({
       where: { id: doc.id },
       create: {
         id: doc.id,
         dealId: doc.dealId,
         fileName: doc.fileName,
-        blobUrl: doc.blobUrl,
+        blobUrl,
         mimeType: doc.mimeType,
         sizeBytes: doc.sizeBytes,
         extractedFieldsRaw: doc.extractedFieldsRaw,
@@ -55,7 +60,9 @@ async function main() {
         taintOverride: doc.taintOverride || null,
         uploadedAt: new Date(doc.uploadedAt),
       },
-      update: {},
+      update: {
+        blobUrl,
+      },
     });
   }
 
