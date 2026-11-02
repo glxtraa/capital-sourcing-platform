@@ -166,6 +166,8 @@ export function CriterionSourceInspectorModal({
               <div className="flex items-center gap-2">
                 {cfg.isDirectProof ? (
                   <ShieldCheck className="h-5 w-5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                ) : method === "MANDATE_DEFAULT_UNQUOTED" || method === "UNPUBLISHED_DESK_ESTIMATE" ? (
+                  <AlertTriangle className="h-5 w-5 text-amber-600 dark:text-amber-400 shrink-0" />
                 ) : (
                   <Sparkles className="h-5 w-5 text-purple-600 dark:text-purple-400 shrink-0" />
                 )}
@@ -174,11 +176,15 @@ export function CriterionSourceInspectorModal({
                     <span className="font-bold text-sm text-neutral-900 dark:text-neutral-100">
                       Provenance: {cfg.label}
                     </span>
-                    {!cfg.isDirectProof && (
+                    {method === "AGENT_INFERRED_FROM_SCOPE" ? (
                       <span className="rounded bg-purple-200 dark:bg-purple-900 px-1.5 py-0.2 text-[10px] font-bold text-purple-900 dark:text-purple-200">
                         AI INFERENCE
                       </span>
-                    )}
+                    ) : method === "MANDATE_DEFAULT_UNQUOTED" || method === "UNPUBLISHED_DESK_ESTIMATE" ? (
+                      <span className="rounded bg-amber-200 dark:bg-amber-900/60 px-1.5 py-0.2 text-[10px] font-bold text-amber-900 dark:text-amber-200">
+                        DESK ESTIMATE
+                      </span>
+                    ) : null}
                   </div>
                   <p className="text-[11px] text-neutral-600 dark:text-neutral-400 mt-0.5">
                     {cfg.description}
