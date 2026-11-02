@@ -23,6 +23,7 @@ const db = new PrismaClient();
 const uniq = <T>(arr: T[] | undefined | null): T[] => Array.from(new Set(arr ?? []));
 
 const FORCE = process.argv.includes("--force");
+const TARGET_ASSET_CLASS = process.argv.find((a) => a.startsWith("--asset-class="))?.split("=")[1]?.toUpperCase() || "ALL";
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   let timer: NodeJS.Timeout;
@@ -32,26 +33,32 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timer));
 }
 
-function isRecentlyVerified(date: Date | null | undefined): boolean {
-  if (FORCE || !date) return false;
-  return new Date(date).getTime() >= new Date("2026-10-30T00:00:00Z").getTime();
+function shouldSkipFunder(entity: { lastVerified?: Date | null; criteriaProvenance?: any }): boolean {
+  if (FORCE) return false;
+  // If the funder has criteriaProvenance with at least one verified quote, we can safely resume/skip
+  if (Array.isArray(entity.criteriaProvenance) && entity.criteriaProvenance.length > 0) {
+    return true;
+  }
+  return false;
 }
 
 async function main() {
   console.log("=================================================================");
   console.log("STARTING LIVE RE-RESEARCH & LINK VERIFICATION ACROSS ALL FUNDERS");
-  console.log("Mode: " + (FORCE ? "FORCE (re-running all)" : "RESUME (skipping recently verified < 4h)"));
+  console.log("Mode: " + (FORCE ? "FORCE (re-running all)" : "RESUME (skipping funders with verified criteriaProvenance)"));
+  console.log("Target Asset Class: " + TARGET_ASSET_CLASS);
   console.log("=================================================================\n");
 
   // 1. INVOICE PROVIDERS (db.provider)
+  if (TARGET_ASSET_CLASS === "ALL" || TARGET_ASSET_CLASS === "INVOICE") {
   const providers = await db.provider.findMany({ orderBy: { name: "asc" } });
   console.log(`\n--- 1. Re-researching ${providers.length} Invoice Providers ---`);
   for (let i = 0; i < providers.length; i++) {
     const p = providers[i];
     console.log(`\n[Invoice ${i + 1}/${providers.length}] ${p.name} (${p.id})`);
 
-    if (isRecentlyVerified(p.lastVerified)) {
-      console.log(`  ↪ Skipped (already re-researched recently at ${p.lastVerified?.toISOString()})`);
+    if (shouldSkipFunder(p)) {
+      console.log(`  ↪ Skipped (already has verified criteriaProvenance with ${(p.criteriaProvenance as any[]).length} rules)`);
       continue;
     }
 
@@ -137,16 +144,18 @@ async function main() {
       console.error(`  ⚠ Failed re-researching provider ${p.id}:`, err instanceof Error ? err.message : err);
     }
   }
+  }
 
   // 2. COMMODITY TRADE FUNDERS (db.tradeFunder)
+  if (TARGET_ASSET_CLASS === "ALL" || TARGET_ASSET_CLASS === "TRADE") {
   const tradeFunders = await db.tradeFunder.findMany({ orderBy: { name: "asc" } });
   console.log(`\n\n--- 2. Re-researching ${tradeFunders.length} Commodity Trade Funders ---`);
   for (let i = 0; i < tradeFunders.length; i++) {
     const f = tradeFunders[i];
     console.log(`\n[Trade Funder ${i + 1}/${tradeFunders.length}] ${f.name} (${f.id})`);
 
-    if (isRecentlyVerified(f.lastVerified)) {
-      console.log(`  ↪ Skipped (already re-researched recently at ${f.lastVerified?.toISOString()})`);
+    if (shouldSkipFunder(f)) {
+      console.log(`  ↪ Skipped (already has verified criteriaProvenance with ${(f.criteriaProvenance as any[]).length} rules)`);
       continue;
     }
 
@@ -236,16 +245,18 @@ async function main() {
       console.error(`  ⚠ Failed re-researching trade funder ${f.id}:`, err instanceof Error ? err.message : err);
     }
   }
+  }
 
   // 3. STARTUP INVESTORS (db.startupInvestor)
+  if (TARGET_ASSET_CLASS === "ALL" || TARGET_ASSET_CLASS === "VC") {
   const investors = await db.startupInvestor.findMany({ orderBy: { name: "asc" } });
   console.log(`\n\n--- 3. Re-researching ${investors.length} Startup VC Investors ---`);
   for (let i = 0; i < investors.length; i++) {
     const inv = investors[i];
     console.log(`\n[Startup Investor ${i + 1}/${investors.length}] ${inv.name} (${inv.id})`);
 
-    if (isRecentlyVerified(inv.lastVerified)) {
-      console.log(`  ↪ Skipped (already re-researched recently at ${inv.lastVerified?.toISOString()})`);
+    if (shouldSkipFunder(inv)) {
+      console.log(`  ↪ Skipped (already has verified criteriaProvenance with ${(inv.criteriaProvenance as any[]).length} rules)`);
       continue;
     }
 
@@ -329,6 +340,7 @@ async function main() {
     } catch (err) {
       console.error(`  ⚠ Failed re-researching startup investor ${inv.id}:`, err instanceof Error ? err.message : err);
     }
+  }
   }
 
   // 4. POST-BATCH AUTOMATIC RE-MATCHING ACROSS ALL DEALS IN ALL 3 ASSET CLASSES
