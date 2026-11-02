@@ -61,6 +61,8 @@ export const TierMatchCandidateSchema = z.object({
     )
     .default([]),
   missingDocuments: z.array(z.string()).default([]),
+  groundingProofScorePct: z.number().optional(),
+  compositeRankScore: z.number().optional(),
 });
 export type TierMatchCandidate = z.infer<typeof TierMatchCandidateSchema>;
 

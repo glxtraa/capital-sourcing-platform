@@ -120,7 +120,7 @@ export function MatchCriteriaAndDocsChecklist({
                   {criteria.map((c) => {
                     const fSide = c.funderSide;
                     const isDirectQuote = fSide?.acquisitionMethod === "VERIFIED_WEB_QUOTE" || fSide?.acquisitionMethod === "REGULATORY_FILING_QUOTE";
-                    const isInference = fSide?.acquisitionMethod === "AGENT_INFERRED_FROM_SCOPE";
+                    const isInference = fSide?.acquisitionMethod === "AGENT_INFERRED_FROM_SCOPE" || fSide?.acquisitionMethod === "MANDATE_DEFAULT_UNQUOTED";
 
                     return (
                       <tr

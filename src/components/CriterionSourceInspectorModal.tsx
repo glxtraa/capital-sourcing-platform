@@ -53,6 +53,12 @@ const METHOD_CONFIG: Record<
     isDirectProof: false,
     description: "NOT a verbatim quote. Deduced by underwriting AI based on the funder's licensed product capabilities and ticket limits.",
   },
+  MANDATE_DEFAULT_UNQUOTED: {
+    label: "Mandate Policy (Unquoted)",
+    badgeClass: "bg-amber-100 text-amber-800 dark:bg-amber-950/70 dark:text-amber-300 border-amber-300 dark:border-amber-800 font-medium",
+    isDirectProof: false,
+    description: "Evaluated against funder registered geographic licenses/mandate. No direct verbatim sentence quote published on retail marketing website.",
+  },
   UNPUBLISHED_DESK_ESTIMATE: {
     label: "Unpublished Desk Estimate",
     badgeClass: "bg-amber-100 text-amber-800 dark:bg-amber-950/70 dark:text-amber-300 border-amber-300 dark:border-amber-800",

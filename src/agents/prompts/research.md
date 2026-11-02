@@ -35,6 +35,15 @@ verification.
 
 ## Hard rules
 
+- **STRICT VERBATIM PROVENANCE FOR CRITERIA**:
+  - Whenever you populate `sellerJurisdictions`, `obligorJurisdictions`, `minTicketUsd`, `maxTicketUsd`, or `financingStructuresSupported`, you MUST also emit corresponding entries in `criteriaProvenance`.
+  - Each `criteriaProvenance` entry must include:
+    - `criterionKey`: (e.g. "sellerJurisdiction", "obligorJurisdiction", "ticketSize", "financingStructure")
+    - `ruleValueSummary`: Concise factual summary of the rule
+    - `acquisitionMethod`: "VERIFIED_WEB_QUOTE" (if copied from page) or "SCRAPED_APPLICATION_FORM"
+    - `verbatimQuote`: The exact sentence or table row copied from the cited webpage
+    - `sourceUrl`: The exact URL where the quote is located
+  - Never fabricate or paraphrase quotes; the DSL Grounding Gate will verify the quote substring against the crawled webpage text.
 - **Never fabricate a fee, minimum, or document requirement.** If it isn't published and you
   didn't get it from a real source, the field says so (`null` / "not disclosed") — a wrong number
   is worse than an honest gap.

@@ -60,6 +60,8 @@ export interface MatchResult {
   eligibleOnPaper: boolean;
   criteria: MatchCriterion[];
   reasons: string[];
+  groundingProofScorePct?: number;
+  compositeRankScore?: number;
 }
 
 function jurisdictionOk(providerList: string[], value: string | null): boolean {
@@ -199,7 +201,28 @@ export function matchProvider(
     funderSide: resolveFunderCriterionProvenance(provider, "dataFreshness"),
   });
 
-  return { providerId: provider.id, eligibleOnPaper, criteria, reasons };
+  // Calculate Grounding Proof Score & Composite Rank Score
+  const evaluatedProofCriteria = criteria.filter((c) => c.key !== "dataFreshness" && c.key !== "gatingFactor");
+  const verifiedCount = evaluatedProofCriteria.filter((c) => {
+    const m = c.funderSide?.acquisitionMethod;
+    return m === "VERIFIED_WEB_QUOTE" || m === "REGULATORY_FILING_QUOTE" || m === "SCRAPED_APPLICATION_FORM" || m === "HUMAN_OPERATOR_OVERRIDE";
+  }).length;
+  const groundingProofScorePct = evaluatedProofCriteria.length > 0
+    ? Math.round((verifiedCount / evaluatedProofCriteria.length) * 100)
+    : 100;
+
+  const freshnessScore = isStale ? 30 : 100;
+  const eligibilityScore = eligibleOnPaper ? (rawEligibleOnPaper ? 100 : 70) : 0;
+  const compositeRankScore = Math.round(eligibilityScore * 0.5 + groundingProofScorePct * 0.35 + freshnessScore * 0.15);
+
+  return {
+    providerId: provider.id,
+    eligibleOnPaper,
+    criteria,
+    reasons,
+    groundingProofScorePct,
+    compositeRankScore,
+  };
 }
 
 export function matchAllProviders(
@@ -210,7 +233,14 @@ export function matchAllProviders(
 ): MatchResult[] {
   return providers
     .map((p) => matchProvider(p, deal, ask, options))
-    .sort((a, b) => Number(b.eligibleOnPaper) - Number(a.eligibleOnPaper));
+    .sort((a, b) => {
+      // 1. Primary: paper eligibility
+      if (Number(b.eligibleOnPaper) !== Number(a.eligibleOnPaper)) {
+        return Number(b.eligibleOnPaper) - Number(a.eligibleOnPaper);
+      }
+      // 2. Secondary: Composite Rank Score (proof-grounded ranking)
+      return (b.compositeRankScore ?? 0) - (a.compositeRankScore ?? 0);
+    });
 }
 
 /**

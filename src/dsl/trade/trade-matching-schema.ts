@@ -30,6 +30,8 @@ export const UmbrellaMatchSchema = z.object({
   rationale: z.string(),
   criteria: z.array(LegCriteriaStatusSchema),
   missingDocuments: z.array(z.string()),
+  groundingProofScorePct: z.number().optional(),
+  compositeRankScore: z.number().optional(),
 });
 export type UmbrellaMatch = z.infer<typeof UmbrellaMatchSchema>;
 
@@ -41,6 +43,8 @@ export const ModularLegMatchSchema = z.object({
   rationale: z.string(),
   criteria: z.array(LegCriteriaStatusSchema),
   missingDocuments: z.array(z.string()).optional(),
+  groundingProofScorePct: z.number().optional(),
+  compositeRankScore: z.number().optional(),
 });
 export type ModularLegMatch = z.infer<typeof ModularLegMatchSchema>;
 

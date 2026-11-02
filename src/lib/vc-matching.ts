@@ -551,6 +551,19 @@ export function matchStartupDeal(
       matchRationale += ` High-leverage portfolio network synergy: Investor backed ${partnerSynergies.join(", ")}, presenting warm customer introduction & partnership distribution potential.`;
     }
 
+    // Calculate Grounding Proof Score & Composite Rank Score for VC Candidate
+    const evaluatedProofCriteria = criteria.filter((c) => c.key !== "dataFreshness" && c.key !== "gatingFactor");
+    const verifiedCount = evaluatedProofCriteria.filter((c) => {
+      const m = c.funderSide?.acquisitionMethod;
+      return m === "VERIFIED_WEB_QUOTE" || m === "REGULATORY_FILING_QUOTE" || m === "SCRAPED_APPLICATION_FORM" || m === "HUMAN_OPERATOR_OVERRIDE";
+    }).length;
+    const groundingProofScorePct = evaluatedProofCriteria.length > 0
+      ? Math.round((verifiedCount / evaluatedProofCriteria.length) * 100)
+      : 100;
+
+    const verdictScore = verdict === "GOOD" ? 100 : verdict === "POSSIBLE" ? 65 : 0;
+    const compositeRankScore = Math.round(verdictScore * 0.4 + thesisResonanceScore * 0.3 + groundingProofScorePct * 0.3);
+
     const baseCandidate: TierMatchCandidate = {
       investorId: inv.id,
       investorName: inv.name,
@@ -568,6 +581,8 @@ export function matchStartupDeal(
       competitorConflictNotes,
       sourceLinksAudit,
       missingDocuments: missingDocs,
+      groundingProofScorePct,
+      compositeRankScore,
     };
 
     // 1. Tier 1: Lead Institutional VCs
@@ -626,6 +641,21 @@ export function matchStartupDeal(
       });
     }
   }
+
+  // Sort candidate lists by verdict and composite rank score (proof-grounded ranking)
+  const sortCandidates = (list: TierMatchCandidate[]) => {
+    const verdictRank = { GOOD: 3, POSSIBLE: 2, POOR: 1, EXCLUDED: 0 };
+    return list.sort((a, b) => {
+      const diff = verdictRank[b.verdict] - verdictRank[a.verdict];
+      if (diff !== 0) return diff;
+      return (b.compositeRankScore ?? 0) - (a.compositeRankScore ?? 0);
+    });
+  };
+
+  sortCandidates(leadCandidates);
+  sortCandidates(coInvestorCandidates);
+  sortCandidates(angelCandidates);
+  sortCandidates(acceleratorOptions);
 
   const eligibleLeads = leadCandidates.filter((c) => c.verdict === "GOOD").length;
   const eligibleSyndicates = coInvestorCandidates.filter((c) => c.verdict === "GOOD").length;

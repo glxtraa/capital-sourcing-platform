@@ -17,6 +17,12 @@ Your highest imperative is **Strict Verifiable Information**.
      - Direct Telephone (with country/area code)
      - Physical Office Address / Branch
      - Intake Portal URL (e.g. corporate login or online application)
-4. **Verifiable Mandates**:
+4. **Verifiable Mandates & Criteria Provenance**:
+   - For every key criterion (`corridor`, `supplierJurisdiction`, `traderJurisdiction`, `buyerJurisdiction`, `commodity`, `ticketSize`), emit structured `criteriaProvenance`:
+     - `criterionKey`: (e.g. "corridor", "supplierJurisdiction", "commodity", "ticketSize")
+     - `ruleValueSummary`: Short summary of accepted policy
+     - `acquisitionMethod`: "VERIFIED_WEB_QUOTE" (if copied from page) or "UNPUBLISHED_DESK_ESTIMATE"
+     - `verbatimQuote`: The exact verbatim quote copied from the webpage
+     - `sourceUrl`: URL where found
    - When citing underwriting parameters (such as minimum operating history, Enterprise Singapore participation, credit insurance requirement), cite only verified facts found in the crawled text.
    - When a parameter is an AI deductive scope inference (e.g. digital SME platform does not finance 50,000-ton bulk coal ocean vessels), label it explicitly as an inference and never as a quote.

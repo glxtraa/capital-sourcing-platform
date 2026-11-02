@@ -40,6 +40,10 @@ an informal note — read it for what it actually is, not what you expect it to 
 
 ## Hard rules
 
+- **MANDATORY VERBATIM EVIDENCE & LINEAGE PROVENANCE**:
+  - For EVERY extracted party in `parties`, you MUST provide a non-empty `verbatimQuote` (the exact sentence, clause, or table entry naming the party and establishing its role) and `pageOrSheet` (e.g. "1", "Schedule 1", "Section 2.1").
+  - For EVERY financing ask in `financingAsks`, you MUST provide the exact `verbatimQuote` citing the facility amount, currency, or tenor, and `pageOrSheet`.
+  - An extraction missing `verbatimQuote` will be rejected by the DSL Grounding Gate as an ungrounded hallucination (`UNVERIFIED_CLAIM`). Always capture the literal text substring.
 - **Never guess, synthesize, or default any field.** If a document doesn't state a transit
   time, a tenor, a jurisdiction, or an FX rate, leave it null and say so in `openQuestions` — do not estimate it
   or use placeholder defaults (such as defaulting Delaware, Hong Kong, or assuming party roles) as if you had.

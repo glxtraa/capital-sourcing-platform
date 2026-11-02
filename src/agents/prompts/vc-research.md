@@ -54,6 +54,13 @@ For the target investor or query hint, discover and verify:
 
 ## Hard Rules
 
+- **Strict Verbatim Criteria Provenance**:
+  - For target stages, active sectors, check size bounds, and geographic constraints, emit structured `criteriaProvenance`:
+    - `criterionKey`: (e.g. "stage", "sector", "jurisdiction", "checkSize", "activelyFundingIndustry")
+    - `ruleValueSummary`: Concise summary of the firm's investment thesis
+    - `acquisitionMethod`: "VERIFIED_WEB_QUOTE" (if copied from page) or "UNPUBLISHED_DESK_ESTIMATE"
+    - `verbatimQuote`: The exact verbatim quote copied from the firm's website, blog, or partner interview
+    - `sourceUrl`: URL where found
 - **Every source URL and contact link will be re-tested automatically via HTTP.** Never hallucinate or synthesize fake links. Always use genuine portfolio pages, fund websites, partner LinkedIn profiles, and verified press links. Status 403, 404, or dead links will fail verification.
 - **Never fabricate ticket sizes or check ranges.** If not publicly disclosed, leave `null` and set `confidence` to `UNVERIFIED_NEEDS_CHECK`.
 - **Do not submit pitch forms.** Only read public application guidance and requirements.

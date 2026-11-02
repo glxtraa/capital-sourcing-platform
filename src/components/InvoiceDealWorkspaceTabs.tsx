@@ -363,7 +363,7 @@ export function InvoiceDealWorkspaceTabs({ deal }: InvoiceDealWorkspaceTabsProps
                             const docCoverage = computeDocumentCoverage(m.provider.documentsRequired, deal.documents);
                             const missingDocCount = docCoverage.filter((d) => !d.satisfied).length;
                             const failed = criteria.filter((c) => c.status === "fail");
-                            const isRelaxed = relaxInferredInvoice && failed.length > 0 && failed.every((c) => c.funderSide?.acquisitionMethod === "AGENT_INFERRED_FROM_SCOPE" || c.funderSide?.acquisitionMethod === "UNPUBLISHED_DESK_ESTIMATE");
+                            const isRelaxed = relaxInferredInvoice && failed.length > 0 && failed.every((c) => c.funderSide?.acquisitionMethod === "AGENT_INFERRED_FROM_SCOPE" || c.funderSide?.acquisitionMethod === "MANDATE_DEFAULT_UNQUOTED" || c.funderSide?.acquisitionMethod === "UNPUBLISHED_DESK_ESTIMATE");
                             const effectiveVerdict = isRelaxed ? "POSSIBLE" : m.verdict;
 
                             return (

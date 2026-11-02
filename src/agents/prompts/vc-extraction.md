@@ -65,5 +65,8 @@ Read the document for what it actually is, not what you expect it to be.
 
 ## Hard Rules
 1. **Extract only from THIS document**: Cross-document reconciliation occurs in the next pass.
-2. **Never fabricate numbers or use defaults**: If burn rate, valuation cap, runway, jurisdiction, or customer count is not stated in this file, leave it `null` and note it in `openQuestions`. Never use placeholder defaults (like defaulting Delaware, 80% margin, or 18 months runway).
-3. **Audit provenance**: Record exact facts as presented in the file.
+2. **Mandatory Verbatim Evidence & Lineage Quotes**:
+   - For all traction metrics (ARR, MRR, growth), cap table figures, and round asks (target raise, valuation cap, instrument), you MUST capture the exact `verbatimQuote` string and `pageOrSheet` from the document.
+   - Extractions without verbatim quotes are flagged as `UNVERIFIED_CLAIM` by the DSL Grounding Gate.
+3. **Never fabricate numbers or use defaults**: If burn rate, valuation cap, runway, jurisdiction, or customer count is not stated in this file, leave it `null` and note it in `openQuestions`. Never use placeholder defaults (like defaulting Delaware, 80% margin, or 18 months runway).
+4. **Audit provenance**: Record exact facts as presented in the file.

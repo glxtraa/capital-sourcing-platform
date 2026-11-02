@@ -147,6 +147,7 @@ export const CriterionAcquisitionMethodSchema = z.enum([
   "REGULATORY_FILING_QUOTE",   // Direct quote from MAS / OJK / SEC / Central Bank disclosure
   "SCRAPED_APPLICATION_FORM",  // Extracted directly from HTML form fields / dropdowns
   "AGENT_INFERRED_FROM_SCOPE", // Deduced from product scope (e.g. digital SME invoice platform -> excludes bulk coal)
+  "MANDATE_DEFAULT_UNQUOTED",  // Explicit mandate parameter on file, but no direct public marketing sentence quote
   "UNPUBLISHED_DESK_ESTIMATE", // Standard institutional rule not published on retail web pages
   "HUMAN_OPERATOR_OVERRIDE",   // Manually entered or edited by an operator in the platform
 ]);
@@ -298,10 +299,10 @@ export function resolveFunderCriterionProvenance(
 
     return {
       ruleSummary: `Accepted Domiciles: ${acceptedStr}`,
-      acquisitionMethod: quote ? "VERIFIED_WEB_QUOTE" : "AGENT_INFERRED_FROM_SCOPE",
+      acquisitionMethod: quote ? "VERIFIED_WEB_QUOTE" : "MANDATE_DEFAULT_UNQUOTED",
       howObtainedExplanation: quote
         ? "Derived from verified regulatory borrower entity disclosures and cross-border underwriting criteria on official portal."
-        : "Evaluated against funder registered geographic licenses and regional corporate presence.",
+        : "Funder registered mandate/licenses accept these jurisdictions; no verbatim marketing quote published on public webpage.",
       sourceUrl: quoteUrl,
       sourcePageTitle: isFundingSocieties ? "Funding Societies Singapore - Accounts Receivable Financing" : sourceTitle,
       verbatimQuote: quote,

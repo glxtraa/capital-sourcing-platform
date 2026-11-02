@@ -282,6 +282,19 @@ export function matchTradeDeal(
         isTier1 = false;
       }
 
+      // Calculate Grounding Proof Score & Composite Rank Score for Umbrella Match
+      const evaluatedProofCriteria = criteria.filter((c) => c.key !== "dataFreshness" && c.key !== "gatingFactor");
+      const verifiedCount = evaluatedProofCriteria.filter((c) => {
+        const m = c.funderSide?.acquisitionMethod;
+        return m === "VERIFIED_WEB_QUOTE" || m === "REGULATORY_FILING_QUOTE" || m === "SCRAPED_APPLICATION_FORM" || m === "HUMAN_OPERATOR_OVERRIDE";
+      }).length;
+      const groundingProofScorePct = evaluatedProofCriteria.length > 0
+        ? Math.round((verifiedCount / evaluatedProofCriteria.length) * 100)
+        : 100;
+
+      const verdictScore = verdict === "GOOD" ? 100 : verdict === "POSSIBLE" ? 65 : 0;
+      const compositeRankScore = Math.round(verdictScore * 0.5 + groundingProofScorePct * 0.4 + (funder.lastVerified ? 10 : 0));
+
       umbrellaMatches.push({
         funderId: funder.id,
         funderName: funder.name,
@@ -290,10 +303,12 @@ export function matchTradeDeal(
         rationale: verdict === "GOOD"
           ? `Covers full buy-to-sell cycle for ${spec.corridor} with ticket $${dealVolumeUsd.toLocaleString()}.`
           : verdict === "POSSIBLE"
-          ? `Relaxed Match: Passes verified parameters; flagged on inferred policy (${failingCriteria.map((c) => c.label).join(", ")}).`
+          ? `Relaxed Match: Passes verified parameters; flagged on unquoted mandate policy (${failingCriteria.map((c) => c.label).join(", ")}).`
           : `Excluded: ${failingCriteria.map((c) => c.detail).join("; ")}`,
         criteria,
         missingDocuments: missingDocs,
+        groundingProofScorePct,
+        compositeRankScore,
       });
     }
 
@@ -354,6 +369,14 @@ export function matchTradeDeal(
       });
     }
   }
+
+  // Sort umbrella matches by verdict and composite grounding proof rank
+  umbrellaMatches.sort((a, b) => {
+    const verdictRank = { GOOD: 3, POSSIBLE: 2, POOR: 1, EXCLUDED: 0 };
+    const diff = verdictRank[b.verdict] - verdictRank[a.verdict];
+    if (diff !== 0) return diff;
+    return (b.compositeRankScore ?? 0) - (a.compositeRankScore ?? 0);
+  });
 
   const eligibleUmbrellaCount = umbrellaMatches.filter((m) => m.verdict === "GOOD").length;
   const umbrellaMatchesAvailable = eligibleUmbrellaCount > 0;

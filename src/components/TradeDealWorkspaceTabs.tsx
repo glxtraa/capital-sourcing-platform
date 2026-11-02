@@ -243,7 +243,12 @@ export function TradeDealWorkspaceTabs({ deal }: TradeDealWorkspaceTabsProps) {
 
     const failed = evaluatedCriteria.filter((c) => c.status === "fail");
     if (failed.length === 0) return false;
-    return failed.every((c) => c.funderSide?.acquisitionMethod === "AGENT_INFERRED_FROM_SCOPE" || c.funderSide?.acquisitionMethod === "UNPUBLISHED_DESK_ESTIMATE");
+    return failed.every(
+      (c) =>
+        c.funderSide?.acquisitionMethod === "AGENT_INFERRED_FROM_SCOPE" ||
+        c.funderSide?.acquisitionMethod === "MANDATE_DEFAULT_UNQUOTED" ||
+        c.funderSide?.acquisitionMethod === "UNPUBLISHED_DESK_ESTIMATE",
+    );
   }
 
   const tradeExcludedMatches = deal.matches.filter((m) => {

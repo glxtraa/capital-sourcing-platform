@@ -74,6 +74,11 @@ export async function downloadBlobBuffer(blobUrl: string): Promise<Buffer> {
   }
   const res = await fetch(blobUrl, Object.keys(headers).length > 0 ? { headers } : undefined);
   if (!res.ok) {
+    if (res.status === 404) {
+      throw new Error(
+        `Failed to download file from blob: 404 Not Found (The stored file blob has expired or was removed. Please re-upload the document).`
+      );
+    }
     throw new Error(`Failed to download file from blob: ${res.status} ${res.statusText}`);
   }
   return Buffer.from(await res.arrayBuffer());

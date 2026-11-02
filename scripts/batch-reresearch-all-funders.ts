@@ -111,14 +111,15 @@ async function main() {
             data: {
               sellerJurisdictions: verifiedSellerJur.length ? uniq(verifiedSellerJur) : p.sellerJurisdictions,
               obligorJurisdictions: verifiedObligorJur.length ? uniq(verifiedObligorJur) : p.obligorJurisdictions,
-              minInvoiceAmountUsd: groundingReport.items.find((i) => i.field === "minInvoiceAmountUsd")?.status === "VERIFIED" ? structured.minInvoiceAmountUsd : p.minInvoiceAmountUsd,
-              maxFacilityAmountUsd: groundingReport.items.find((i) => i.field === "maxFacilityAmountUsd")?.status === "VERIFIED" ? structured.maxFacilityAmountUsd : p.maxFacilityAmountUsd,
-              typicalAdvanceRatePct: structured.typicalAdvanceRatePct ?? p.typicalAdvanceRatePct,
+              minTicketUsd: groundingReport.items.find((i) => i.field === "minTicketUsd")?.status === "VERIFIED" ? structured.minTicketUsd : p.minTicketUsd,
+              maxTicketUsd: groundingReport.items.find((i) => i.field === "maxTicketUsd")?.status === "VERIFIED" ? structured.maxTicketUsd : p.maxTicketUsd,
               gatingFactor: structured.gatingFactor || p.gatingFactor,
-              websiteUrl: structured.websiteUrl || p.websiteUrl,
               applicationUrl: structured.applicationUrl || p.applicationUrl,
               sources: verifiedSources.length > 0 ? verifiedSources : p.sources,
               financingStructuresSupported: structures as never,
+              criteriaProvenance: Array.isArray(structured.criteriaProvenance) && structured.criteriaProvenance.length > 0
+                ? (structured.criteriaProvenance as any)
+                : (p.criteriaProvenance ?? undefined),
               lastVerified: new Date(),
               confidence: workingUrls.length > 0 && groundingReport.groundingScorePct >= 60 ? "VERIFIED_SITE" : "VERIFIED_SECONDARY",
               documentsRequired: {
@@ -215,6 +216,9 @@ async function main() {
               applicationUrl: structured.applicationUrl || f.applicationUrl,
               contact: structured.contact || f.contact,
               sources: verifiedSources.length > 0 ? verifiedSources : f.sources,
+              criteriaProvenance: Array.isArray(structured.criteriaProvenance) && structured.criteriaProvenance.length > 0
+                ? (structured.criteriaProvenance as any)
+                : (f.criteriaProvenance ?? undefined),
               lastVerified: new Date(),
               confidence: workingUrls.length > 0 && groundingReport.groundingScorePct >= 60 ? "VERIFIED_SITE" : "VERIFIED_SECONDARY",
               documentsRequired: {
@@ -306,6 +310,9 @@ async function main() {
               applicationUrl: structured.applicationUrl || inv.applicationUrl,
               sources: verifiedSources.length > 0 ? verifiedSources : inv.sources,
               sourceLinksAudit: JSON.parse(JSON.stringify(linkAudit)),
+              criteriaProvenance: Array.isArray(structured.criteriaProvenance) && structured.criteriaProvenance.length > 0
+                ? (structured.criteriaProvenance as any)
+                : (inv.criteriaProvenance ?? undefined),
               lastVerified: new Date(),
               confidence: workingUrls.length > 0 && groundingReport.groundingScorePct >= 60 ? "VERIFIED_SITE" : "VERIFIED_SECONDARY",
               documentsRequired: {

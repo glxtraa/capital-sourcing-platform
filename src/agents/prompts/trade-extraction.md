@@ -56,5 +56,8 @@ Identify if the document corresponds to one of the three primary trade corridors
 ## Hard Rules
 
 1. **Extract only from THIS document**: Cross-document reconciliation happens in the next agent pass.
-2. **Never fabricate specifications, incoterms, or numbers**: If calorific value, moisture, incoterm, port, or laycan window is not stated, leave it null and list it in `openQuestions`. Do not guess or default to FOB, CFR, or default tolerances.
-3. **Bilingual documents**: Read both language versions (e.g. English/Indonesian, English/Chinese, English/Spanish) and note any governing language clause.
+2. **Mandatory Verbatim Evidence & Lineage Quotes**:
+   - For every party, contract leg, commodity spec, and financing figure, you MUST provide the exact literal `verbatimQuote` text directly from the document and the page reference in `pageOrSheet`.
+   - Never output empty or synthetic quotes; capture literal phrases so the DSL Grounding Gate can verify them in the source text layer.
+3. **Never fabricate specifications, incoterms, or numbers**: If calorific value, moisture, incoterm, port, or laycan window is not stated, leave it null and list it in `openQuestions`. Do not guess or default to FOB, CFR, or default tolerances.
+4. **Bilingual documents**: Read both language versions (e.g. English/Indonesian, English/Chinese, English/Spanish) and note any governing language clause.
