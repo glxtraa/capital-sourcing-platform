@@ -1,4 +1,6 @@
 import type { FinancingAsk, Party } from "@prisma/client";
+import { isJurisdictionAccepted } from "@/lib/jurisdiction-normalizer";
+import { resolveFunderCriterionProvenance, type FunderSideCriterionProvenance } from "@/dsl/provenance";
 
 /**
  * Deliberately a narrow structural type (just the fields this file reads)
@@ -10,6 +12,7 @@ import type { FinancingAsk, Party } from "@prisma/client";
  */
 interface MatchableProvider {
   id: string;
+  name?: string;
   sellerJurisdictions: string[];
   obligorJurisdictions: string[];
   minTicketUsd: number | null;
@@ -18,6 +21,9 @@ interface MatchableProvider {
   financingStructuresSupported: string[];
   gatingFactor: string | null;
   lastVerified: Date | string | null;
+  sources?: string[];
+  pricingProvenance?: any;
+  criteriaProvenance?: any;
 }
 
 /**
@@ -46,6 +52,7 @@ export interface MatchCriterion {
   label: string;
   status: CriterionStatus;
   detail: string;
+  funderSide?: FunderSideCriterionProvenance | null;
 }
 
 export interface MatchResult {
@@ -53,12 +60,12 @@ export interface MatchResult {
   eligibleOnPaper: boolean;
   criteria: MatchCriterion[];
   reasons: string[];
+  groundingProofScorePct?: number;
+  compositeRankScore?: number;
 }
 
 function jurisdictionOk(providerList: string[], value: string | null): boolean {
-  if (!value) return true;
-  if (providerList.some((j) => j.toLowerCase() === "any")) return true;
-  return providerList.some((j) => j.toLowerCase().includes(value.toLowerCase()));
+  return isJurisdictionAccepted(providerList, value);
 }
 
 function ticketOk(
@@ -90,7 +97,9 @@ export function matchProvider(
     obligorJurisdiction: string | null;
   },
   ask: Pick<FinancingAsk, "amount" | "structureType">,
+  options?: { relaxInferredBlockers?: boolean },
 ): MatchResult {
+  const relaxInferred = Boolean(options?.relaxInferredBlockers);
   const reasons: string[] = [];
   const criteria: MatchCriterion[] = [];
 
@@ -105,6 +114,7 @@ export function matchProvider(
         ? `"${deal.borrowerJurisdiction}" is in the provider's accepted list`
         : "no borrower jurisdiction on file yet — not checked"
       : `"${deal.borrowerJurisdiction}" not in provider's accepted list`,
+    funderSide: resolveFunderCriterionProvenance(provider, "sellerJurisdiction"),
   });
 
   const obligorOk = jurisdictionOk(provider.obligorJurisdictions, deal.obligorJurisdiction);
@@ -118,35 +128,53 @@ export function matchProvider(
         ? `"${deal.obligorJurisdiction}" is in the provider's accepted list`
         : "no obligor jurisdiction on file yet — not checked"
       : `"${deal.obligorJurisdiction}" not in provider's accepted list`,
+    funderSide: resolveFunderCriterionProvenance(provider, "obligorJurisdiction"),
   });
 
   const { ok: ticketIsOk, reason: ticketReason } = ticketOk(provider, ask.amount);
   reasons.push(ticketReason);
-  criteria.push({ key: "ticketSize", label: "Ticket size", status: ticketIsOk ? "pass" : "fail", detail: ticketReason });
+  criteria.push({
+    key: "ticketSize",
+    label: "Ticket size",
+    status: ticketIsOk ? "pass" : "fail",
+    detail: ticketReason,
+    funderSide: resolveFunderCriterionProvenance(provider, "ticketSize"),
+  });
 
-  const structureUnreviewed = provider.financingStructuresSupported.length === 0;
+  // A provider must explicitly support the requested structure.
+  // Unreviewed or empty structure arrays are treated as unconfirmed/ineligible for this structure.
+  const structureSpecified = provider.financingStructuresSupported.length > 0;
   const structureOk =
-    structureUnreviewed || // not yet reviewed for this field — don't fail on it
+    structureSpecified &&
     provider.financingStructuresSupported.includes(ask.structureType as never);
   if (!structureOk) {
     reasons.push(
-      `provider's known financing_structures_supported does not include ${ask.structureType} — ` +
-        `re-check the provider's actual product description before ruling this out entirely, ` +
-        `this field is known-incomplete for older entries`,
+      structureSpecified
+        ? `provider's known financing_structures_supported does not include ${ask.structureType}`
+        : `provider's supported financing structures are not confirmed for ${ask.structureType}`,
     );
   }
   criteria.push({
     key: "financingStructure",
     label: "Financing structure",
-    status: structureUnreviewed ? "warning" : structureOk ? "pass" : "fail",
-    detail: structureUnreviewed
-      ? "provider's financing_structures_supported not yet reviewed for this field — don't assume support or exclusion either way"
-      : structureOk
-        ? `supports ${String(ask.structureType).replaceAll("_", " ")}`
-        : `known financing_structures_supported does not include ${String(ask.structureType).replaceAll("_", " ")} — re-check the provider's actual product description before ruling this out entirely`,
+    status: structureOk ? "pass" : "fail",
+    detail: structureOk
+      ? `supports ${String(ask.structureType).replaceAll("_", " ")}`
+      : structureSpecified
+        ? `known financing_structures_supported does not include ${String(ask.structureType).replaceAll("_", " ")}`
+        : `provider's supported financing structures are not verified for ${String(ask.structureType).replaceAll("_", " ")}`,
+    funderSide: resolveFunderCriterionProvenance(provider, "financingStructure"),
   });
 
-  const eligibleOnPaper = sellerOk && obligorOk && ticketIsOk && structureOk;
+  const rawEligibleOnPaper = sellerOk && obligorOk && ticketIsOk && structureOk;
+
+  // If relaxed, check if failure is only unverified AI inference
+  const hardFailures = criteria.filter((c) => {
+    if (c.status !== "fail") return false;
+    const method = c.funderSide?.acquisitionMethod;
+    return method === "VERIFIED_WEB_QUOTE" || method === "REGULATORY_FILING_QUOTE" || method === "HUMAN_OPERATOR_OVERRIDE";
+  });
+  const eligibleOnPaper = rawEligibleOnPaper || (relaxInferred && hardFailures.length === 0);
 
   if (provider.gatingFactor) {
     reasons.push(`gating factor on file: ${provider.gatingFactor}`);
@@ -155,6 +183,7 @@ export function matchProvider(
       label: "Gating factor on file",
       status: "warning",
       detail: provider.gatingFactor,
+      funderSide: resolveFunderCriterionProvenance(provider, "gatingFactor"),
     });
   }
   const lastVerifiedMs = provider.lastVerified ? new Date(provider.lastVerified).getTime() : null;
@@ -169,19 +198,49 @@ export function matchProvider(
     detail: isStale
       ? "last_verified is missing or >90 days old — consider a research-refresh run before relying on this"
       : `verified ${new Date(lastVerifiedMs!).toLocaleDateString()}`,
+    funderSide: resolveFunderCriterionProvenance(provider, "dataFreshness"),
   });
 
-  return { providerId: provider.id, eligibleOnPaper, criteria, reasons };
+  // Calculate Grounding Proof Score & Composite Rank Score
+  const evaluatedProofCriteria = criteria.filter((c) => c.key !== "dataFreshness" && c.key !== "gatingFactor");
+  const verifiedCount = evaluatedProofCriteria.filter((c) => {
+    const m = c.funderSide?.acquisitionMethod;
+    return m === "VERIFIED_WEB_QUOTE" || m === "REGULATORY_FILING_QUOTE" || m === "SCRAPED_APPLICATION_FORM" || m === "HUMAN_OPERATOR_OVERRIDE";
+  }).length;
+  const groundingProofScorePct = evaluatedProofCriteria.length > 0
+    ? Math.round((verifiedCount / evaluatedProofCriteria.length) * 100)
+    : 100;
+
+  const freshnessScore = isStale ? 30 : 100;
+  const eligibilityScore = eligibleOnPaper ? (rawEligibleOnPaper ? 100 : 70) : 0;
+  const compositeRankScore = Math.round(eligibilityScore * 0.5 + groundingProofScorePct * 0.35 + freshnessScore * 0.15);
+
+  return {
+    providerId: provider.id,
+    eligibleOnPaper,
+    criteria,
+    reasons,
+    groundingProofScorePct,
+    compositeRankScore,
+  };
 }
 
 export function matchAllProviders(
   providers: MatchableProvider[],
   deal: { borrowerJurisdiction: string | null; obligorJurisdiction: string | null },
   ask: Pick<FinancingAsk, "amount" | "structureType">,
+  options?: { relaxInferredBlockers?: boolean },
 ): MatchResult[] {
   return providers
-    .map((p) => matchProvider(p, deal, ask))
-    .sort((a, b) => Number(b.eligibleOnPaper) - Number(a.eligibleOnPaper));
+    .map((p) => matchProvider(p, deal, ask, options))
+    .sort((a, b) => {
+      // 1. Primary: paper eligibility
+      if (Number(b.eligibleOnPaper) !== Number(a.eligibleOnPaper)) {
+        return Number(b.eligibleOnPaper) - Number(a.eligibleOnPaper);
+      }
+      // 2. Secondary: Composite Rank Score (proof-grounded ranking)
+      return (b.compositeRankScore ?? 0) - (a.compositeRankScore ?? 0);
+    });
 }
 
 /**

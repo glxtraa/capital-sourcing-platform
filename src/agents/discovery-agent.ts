@@ -14,8 +14,8 @@ const requestOptions = () => ({ signal: AbortSignal.timeout(50_000), maxRetries:
 export type DiscoveryCategory = "FAMILY_OFFICE" | "PRIVATE_CREDIT" | "PLATFORM";
 
 export const CATEGORY_LABEL: Record<DiscoveryCategory, string> = {
-  FAMILY_OFFICE: "family offices / private lenders with a published deal-submission route",
-  PRIVATE_CREDIT: "private credit and trade-finance funds, non-bank direct lenders, factors",
+  FAMILY_OFFICE: "family offices / private lenders with a published receivables or working-capital deal-submission route",
+  PRIVATE_CREDIT: "private credit funds, non-bank direct lenders, factors, and invoice discounting funds",
   PLATFORM: "invoice-financing marketplaces, SCF platforms and fintech receivables lenders",
 };
 

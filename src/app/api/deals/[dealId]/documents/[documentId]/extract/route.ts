@@ -1,6 +1,16 @@
 import { NextResponse } from "next/server";
+import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { extractFromDocument } from "@/agents/extraction-agent";
+import { mergeSingleDocumentExtractions } from "@/agents/merge";
+import { DocumentExtractionSchema, type DocumentExtraction } from "@/dsl/schema";
+import { downloadBlobBuffer } from "@/lib/blob";
+
+export interface DocumentExtractionHistoryEntry {
+  runNumber: number;
+  extractedAt: string;
+  extraction: DocumentExtraction;
+}
 
 /**
  * Extracts ONE document only. Split out from the deal-level extract route
@@ -17,9 +27,12 @@ import { extractFromDocument } from "@/agents/extraction-agent";
  * longer does any LLM work itself, only a fast DB merge, so it can't time
  * out the same way.
  *
- * Idempotent and safe to re-run on just this one document if it fails.
+ * When re-run on a document that was already extracted, this merges the new
+ * extraction with all previously extracted datapoints (never losing previously
+ * found parties, fields, asks, or flags) and appends a full snapshot to
+ * `_history` + `ResearchRun`.
  */
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 export async function POST(
   _req: Request,
@@ -34,21 +47,106 @@ export async function POST(
 
   await db.deal.update({ where: { id: dealId }, data: { status: "EXTRACTING" } });
 
+  const startedAt = new Date();
+
   try {
-    const res = await fetch(doc.blobUrl);
-    const buffer = Buffer.from(await res.arrayBuffer());
-    const extraction = await extractFromDocument(buffer, doc.mimeType, doc.fileName);
-    await db.uploadedDocument.update({
-      where: { id: doc.id },
-      data: { extractedFieldsRaw: extraction, documentTypes: extraction.documentTypes },
+    const buffer = await downloadBlobBuffer(doc.blobUrl);
+    const freshExtraction = await extractFromDocument(buffer, doc.mimeType, doc.fileName);
+
+    // Parse existing extraction & history if this document was extracted before
+    const existingRawObj =
+      doc.extractedFieldsRaw && typeof doc.extractedFieldsRaw === "object" && !Array.isArray(doc.extractedFieldsRaw)
+        ? (doc.extractedFieldsRaw as Record<string, unknown>)
+        : null;
+
+    const prevParsed = existingRawObj ? DocumentExtractionSchema.safeParse(existingRawObj) : null;
+    const previousHistory: DocumentExtractionHistoryEntry[] = Array.isArray(existingRawObj?._history)
+      ? (existingRawObj._history as DocumentExtractionHistoryEntry[])
+      : prevParsed?.success
+        ? [
+            {
+              runNumber: 1,
+              extractedAt: doc.uploadedAt.toISOString(),
+              extraction: prevParsed.data,
+            },
+          ]
+        : [];
+
+    const runNumber = previousHistory.length + 1;
+    const mergedExtraction = prevParsed?.success
+      ? mergeSingleDocumentExtractions(prevParsed.data, freshExtraction)
+      : freshExtraction;
+
+    const updatedHistory: DocumentExtractionHistoryEntry[] = [
+      ...previousHistory,
+      {
+        runNumber,
+        extractedAt: new Date().toISOString(),
+        extraction: freshExtraction,
+      },
+    ];
+
+    const storedPayload = {
+      ...mergedExtraction,
+      _history: updatedHistory,
+    } as unknown as Prisma.InputJsonValue;
+
+    const summaryText =
+      `Run #${runNumber} on "${doc.fileName}": extracted ${freshExtraction.parties.length} part${freshExtraction.parties.length === 1 ? "y" : "ies"}, ` +
+      `${freshExtraction.financingAsks.length} ask(s), ${freshExtraction.riskFlags.length} risk flag(s), ` +
+      `types [${freshExtraction.documentTypes.join(", ") || "none"}].` +
+      (runNumber > 1
+        ? ` Merged cumulative total for file: ${mergedExtraction.parties.length} part${mergedExtraction.parties.length === 1 ? "y" : "ies"}, ${mergedExtraction.financingAsks.length} ask(s), ${mergedExtraction.riskFlags.length} risk flag(s).`
+        : "");
+
+    await db.$transaction([
+      db.uploadedDocument.update({
+        where: { id: doc.id },
+        data: {
+          extractedFieldsRaw: storedPayload,
+          documentTypes: mergedExtraction.documentTypes,
+        },
+      }),
+      db.researchRun.create({
+        data: {
+          dealId,
+          kind: "EXTRACTION",
+          status: "SUCCEEDED",
+          triggeredBy: runNumber > 1 ? `user:re-extract-run-${runNumber}` : "user:initial-extract",
+          inputSummary: doc.fileName,
+          outputSummary: summaryText,
+          startedAt,
+          finishedAt: new Date(),
+        },
+      }),
+    ]);
+
+    return NextResponse.json({
+      documentId,
+      fileName: doc.fileName,
+      runNumber,
+      ok: true,
     });
-    return NextResponse.json({ documentId, fileName: doc.fileName, ok: true });
   } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error);
+    await db.researchRun
+      .create({
+        data: {
+          dealId,
+          kind: "EXTRACTION",
+          status: "FAILED",
+          triggeredBy: "user",
+          inputSummary: doc.fileName,
+          outputSummary: `Extraction failed for "${doc.fileName}": ${errMsg}`,
+          startedAt,
+          finishedAt: new Date(),
+        },
+      })
+      .catch(() => {});
+
     return NextResponse.json(
       {
-        error:
-          `Extraction failed for "${doc.fileName}": ` +
-          (error instanceof Error ? error.message : String(error)),
+        error: `Extraction failed for "${doc.fileName}": ${errMsg}`,
       },
       { status: 500 },
     );

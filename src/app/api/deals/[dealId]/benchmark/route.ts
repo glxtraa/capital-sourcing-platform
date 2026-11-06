@@ -9,7 +9,7 @@ import { runLenderBenchmark } from "@/agents/benchmark-agent";
  * normal serverless function's default timeout — unlike provider
  * research, it doesn't loop on web search.
  */
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 export async function POST(_req: Request, { params }: { params: Promise<{ dealId: string }> }) {
   const { dealId } = await params;

@@ -3,6 +3,10 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { buildMatchInputs } from "@/lib/matching";
 import { researchProviderFindings, structureProviderFindings } from "@/agents/research-agent";
+import { testSourceLinks } from "@/lib/link-verifier";
+import { gateInvoiceProvider } from "@/dsl/compiler";
+import { recordPromptImprovementSuggestion } from "@/lib/prompt-improvement";
+import { recordAgentTrial } from "@/lib/agent-trial-tracker";
 
 /**
  * One step of "research a new provider because matching found none", per
@@ -24,10 +28,13 @@ import { researchProviderFindings, structureProviderFindings } from "@/agents/re
  * migration for a temporary scratch value; they only ever feed a prompt for
  * a provider record the same signed-in user is already allowed to add.
  */
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 const BodySchema = z.discriminatedUnion("step", [
-  z.object({ step: z.literal("search") }),
+  z.object({
+    step: z.literal("search"),
+    funderHint: z.string().optional(),
+  }),
   z.object({
     step: z.literal("structure"),
     runId: z.string(),
@@ -55,10 +62,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ dealId:
   if (body.step === "search") {
     const { dealInput, askInput, currency } = buildMatchInputs(deal.parties, deal.financingAsks);
     const hint =
-      `A capital provider for a ${askInput.structureType} deal, ` +
+      body.funderHint ??
+      (`A capital provider for a ${askInput.structureType} deal, ` +
       `borrower jurisdiction ${dealInput.borrowerJurisdiction ?? "unknown"}, ` +
       `obligor jurisdiction ${dealInput.obligorJurisdiction ?? "unknown"}, ` +
-      `ticket size ~${askInput.amount ?? "unknown"} ${currency ?? ""}`;
+      `ticket size ~${askInput.amount ?? "unknown"} ${currency ?? ""}`);
     const context = `Deal "${deal.name}" — the current provider database has zero eligible providers for it.`;
 
     await db.deal.update({ where: { id: dealId }, data: { status: "RESEARCHING" } });
@@ -90,25 +98,135 @@ export async function POST(req: Request, { params }: { params: Promise<{ dealId:
   }
 
   try {
-    const provider = await structureProviderFindings(body.hint, {
+    let rawProvider = await structureProviderFindings(body.hint, {
       findings: body.findings,
       citedUrls: body.citedUrls,
     });
+
+    let gateResult: ReturnType<typeof gateInvoiceProvider> | null = null;
+    let workingUrls: string[] = [];
+    let pageTexts: string[] = [];
+
+    // Autonomous Gate-Feedback Loop: retry up to 3 times before failing back to user
+    const MAX_GATE_ATTEMPTS = 3;
+    for (let attempt = 1; attempt <= MAX_GATE_ATTEMPTS; attempt++) {
+      const trialStart = Date.now();
+      // 1. Audit and verify source links with keyword grounding
+      const entityKeywords = [rawProvider.name, rawProvider.id.split("-")[0]].filter(Boolean);
+      const linkAudit = body.citedUrls.length > 0
+        ? await testSourceLinks(body.citedUrls, 5, 4000, { requiredKeywords: entityKeywords })
+        : [];
+      workingUrls = linkAudit.filter((l) => l.ok).map((l) => l.url);
+      pageTexts = linkAudit.map((l) => `${l.cachedTitle ?? ""} ${l.cachedSnippet ?? ""}`).filter(Boolean);
+
+      // 2. Strict DSL Grounding Gate: verify all extracted data against cited source pages
+      gateResult = gateInvoiceProvider(
+        { ...rawProvider, sources: workingUrls.length > 0 ? workingUrls : rawProvider.sources },
+        pageTexts
+      );
+
+      if (gateResult.passed && gateResult.cleanData) {
+        // Record successful trial!
+        await recordAgentTrial({
+          runId: run.id,
+          dealId,
+          assetClass: "INVOICE",
+          stage: "RESEARCH_STRUCTURE",
+          trialNumber: attempt,
+          status: "SUCCESS",
+          entityName: rawProvider.name,
+          inputSummary: body.hint,
+          extractedPayload: rawProvider,
+          diagnosticsJson: gateResult.report,
+          durationMs: Date.now() - trialStart,
+        });
+        break; // Passed strict verification!
+      }
+
+      const nextFeedback = `IMPORTANT DSL GATE CORRECTION REQUIRED (Attempt ${attempt + 1}/${MAX_GATE_ATTEMPTS}):
+Your previous extraction was REJECTED by the strict verification gate:
+"${gateResult.error}"
+
+You must autonomously correct this extraction now:
+1. Provider 'name' MUST be the exact corporate/brand name of a single legal institution (e.g. "WorldFirst", "Bettr", "Stenn", "HSBC") verified directly on the cited web pages.
+2. DO NOT output a composite description, category name, or multi-institution string with parentheses or slashes (e.g. NEVER output "Embedded Finance Factoring (via WorldFirst / Bettr)").
+3. Use only claims, minimums, and jurisdictions that actually appear in the findings and cited URLs.`;
+
+      // Record failed gate trial with candidate and rejection reason
+      await recordAgentTrial({
+        runId: run.id,
+        dealId,
+        assetClass: "INVOICE",
+        stage: "RESEARCH_STRUCTURE",
+        trialNumber: attempt,
+        status: "FAILED_GATE",
+        entityName: rawProvider.name,
+        inputSummary: body.hint,
+        extractedPayload: rawProvider,
+        failureReason: gateResult.error || "Failed DSL grounding gate audit.",
+        promptFeedback: nextFeedback,
+        diagnosticsJson: gateResult.report,
+        durationMs: Date.now() - trialStart,
+      });
+
+      // Rejection: Record into Prompt Improvement database for continuous audit
+      await recordPromptImprovementSuggestion({
+        agentType: "INVOICE_RESEARCH",
+        promptId: "research.md",
+        triggerEvent: "DSL_GROUNDING_GATE_REJECTION",
+        failedInput: rawProvider.name,
+        rejectionReason: gateResult.error || "Failed DSL grounding gate audit.",
+        suggestedRule: `Provider name "${rawProvider.name}" failed grounding against cited source pages. Ensure agent extracts the exact corporate/brand name of a single legal entity, not a category/composite label.`,
+        contextJson: {
+          attempt,
+          hint: body.hint,
+          citedUrls: body.citedUrls,
+          dealId,
+        },
+      });
+
+      if (attempt < MAX_GATE_ATTEMPTS) {
+        console.warn(`[deals/research] Attempt ${attempt} failed DSL gate: ${gateResult.error}. Auto-retrying agent with gate feedback...`);
+        rawProvider = await structureProviderFindings(
+          body.hint,
+          { findings: body.findings, citedUrls: body.citedUrls },
+          { feedbackPrompt: nextFeedback }
+        );
+      }
+    }
+
+    if (!gateResult || !gateResult.passed || !gateResult.cleanData) {
+      throw new Error(gateResult?.error || "Failed DSL grounding gate audit after autonomous retry attempts.");
+    }
+
+    const provider = gateResult.cleanData;
+    const { documentsRequired, criteriaProvenance, ...providerData } = provider;
     const lastVerified = provider.lastVerified ? new Date(provider.lastVerified) : null;
+    const cleanCriteria = criteriaProvenance ? JSON.parse(JSON.stringify(criteriaProvenance)) : undefined;
+    const docsCreate = Array.isArray(documentsRequired)
+      ? documentsRequired.map((d: any) => ({ code: d.code, note: d.note ?? null }))
+      : [];
+
     await db.provider.upsert({
       where: { id: provider.id },
-      create: { ...provider, lastVerified, documentsRequired: { create: provider.documentsRequired } },
-      update: {
-        ...provider,
+      create: {
+        ...providerData,
         lastVerified,
-        documentsRequired: { deleteMany: {}, create: provider.documentsRequired },
+        criteriaProvenance: cleanCriteria,
+        documentsRequired: { create: docsCreate },
+      },
+      update: {
+        ...providerData,
+        lastVerified,
+        criteriaProvenance: cleanCriteria,
+        documentsRequired: { deleteMany: {}, create: docsCreate },
       },
     });
     await db.researchRun.update({
       where: { id: run.id },
       data: {
         status: "SUCCEEDED",
-        outputSummary: `Added/updated provider "${provider.name}" (${provider.id}).`,
+        outputSummary: `Added/updated provider "${provider.name}" (${provider.id}) [${gateResult.report.groundingScorePct}% grounded].`,
         finishedAt: new Date(),
       },
     });

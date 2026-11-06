@@ -3,7 +3,7 @@ import { stepBatch } from "@/lib/research-runner";
 import { db } from "@/lib/db";
 
 // One model call per request (see research-runner.ts); the client loops until progress.done_.
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 export async function POST(_req: Request, { params }: { params: Promise<{ batchId: string }> }) {
   const { batchId } = await params;

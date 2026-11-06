@@ -45,9 +45,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ dea
         allowedContentTypes: [
           "application/pdf",
           "text/plain",
+          "text/markdown",
           "text/csv",
           "application/msword",
           "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "application/octet-stream",
         ],
         addRandomSuffix: true,
         tokenPayload: JSON.stringify({ dealId }),

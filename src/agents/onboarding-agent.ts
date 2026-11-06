@@ -10,9 +10,8 @@ import { registrableDomain, hostOf, normalizeName } from "@/lib/domains";
 
 const SYSTEM_PROMPT = readFileSync(join(process.cwd(), "src/agents/prompts/onboarding.md"), "utf-8");
 
-// Stay under Vercel Hobby's 60s function cap: a hung provider call fails fast and the task retries.
-// An AbortSignal (unlike the SDK's `timeout`, which stops counting once headers arrive) covers the body too.
-const requestOptions = () => ({ signal: AbortSignal.timeout(50_000), maxRetries: 0 });
+// Use an extended timeout so search and structuring don't get prematurely aborted
+const requestOptions = () => ({ signal: AbortSignal.timeout(115_000), maxRetries: 1 });
 
 export const OnboardingSchema = z.object({
   applicationRoute: z.enum(["ONLINE_FORM", "EMAIL", "RELATIONSHIP_MANAGER", "BROKER", "NONE_PUBLIC"]),
@@ -123,11 +122,16 @@ export async function structureOnboarding(p: OnboardingSubject, { findings, cite
   if (!content) throw new Error(`Onboarding structuring returned nothing for "${p.name}".`);
   const verified = verifyOnboarding(p, OnboardingSchema.parse(JSON.parse(content)), findings, citedUrls);
 
-  // If the model identified an application page, read its real form fields from the page HTML and
-  // let them replace the model's list -- the page is the source of truth, not the model.
-  const pageUrl = verified.applicationUrl ?? verified.contacts.find((c) => c.channel === "WEB_FORM")?.value ?? null;
-  if (pageUrl && Date.now() - started < 38_000) {
-    return applyInspection(verified, await inspectFormPage(pageUrl));
+  // If the model identified an application page or the provider already had an applicationUrl,
+  // read its real form fields from the page HTML and let them replace the model's list.
+  const pageUrl = verified.applicationUrl ?? p.applicationUrl ?? verified.contacts.find((c) => c.channel === "WEB_FORM")?.value ?? null;
+  if (pageUrl && Date.now() - started < 95_000) {
+    const inspected = await inspectFormPage(pageUrl);
+    const withForm = applyInspection(verified, inspected);
+    if (!withForm.applicationUrl && p.applicationUrl) {
+      withForm.applicationUrl = p.applicationUrl;
+    }
+    return withForm;
   }
   return verified;
 }

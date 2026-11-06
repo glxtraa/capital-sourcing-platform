@@ -58,3 +58,26 @@ export function zodToResponseFormat(
     },
   };
 }
+
+/**
+ * Safely parses and validates structured JSON returned by an OpenRouter model,
+ * stripping markdown ```json fences or leading/trailing text if a provider did
+ * not strictly constrain token generation to raw JSON.
+ */
+export function parseStructuredJson<T>(rawContent: string, schema: z.ZodType<T>): T {
+  let trimmed = rawContent.trim();
+
+  // Strip ```json ... ``` fences if present
+  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenceMatch?.[1]) {
+    trimmed = fenceMatch[1].trim();
+  } else {
+    const firstBrace = trimmed.indexOf("{");
+    const lastBrace = trimmed.lastIndexOf("}");
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      trimmed = trimmed.slice(firstBrace, lastBrace + 1);
+    }
+  }
+
+  return schema.parse(JSON.parse(trimmed));
+}

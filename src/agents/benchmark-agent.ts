@@ -1,7 +1,7 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 import { getOpenRouterClient, BENCHMARK_MODEL } from "@/lib/openrouter";
-import { zodToResponseFormat } from "@/lib/json-schema";
+import { zodToResponseFormat, parseStructuredJson } from "@/lib/json-schema";
 import { TermSheetOutputSchema, type TermSheetOutput } from "@/dsl/termsheet-schema";
 import type { Deal, Party, FinancingAsk, RiskFlag, Provider, ProviderMatch } from "@prisma/client";
 
@@ -67,5 +67,5 @@ export async function runLenderBenchmark(input: BenchmarkInput): Promise<TermShe
   if (!content) {
     throw new Error("Benchmark agent returned no content.");
   }
-  return TermSheetOutputSchema.parse(JSON.parse(content));
+  return parseStructuredJson(content, TermSheetOutputSchema);
 }

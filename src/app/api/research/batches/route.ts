@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createBatch } from "@/lib/research-runner";
 
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 const BodySchema = z.object({
   mode: z.enum(["all", "stale", "selected"]),

@@ -5,6 +5,7 @@
  */
 import { z } from "zod";
 import { FinancingStructureType } from "./schema";
+import { CriterionRuleProvenanceSchema } from "./provenance";
 
 export const ProviderType = z.enum([
   "BANK",
@@ -58,5 +59,6 @@ export const ProviderSchema = z.object({
   sources: z.array(z.string()),
   notes: z.string().nullable().optional(),
   financingStructuresSupported: z.array(FinancingStructureType).default([]),
+  criteriaProvenance: z.array(CriterionRuleProvenanceSchema).optional().default([]),
 });
 export type ProviderDTO = z.infer<typeof ProviderSchema>;

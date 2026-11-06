@@ -25,18 +25,32 @@ export function CardContent({ className, ...props }: HTMLAttributes<HTMLDivEleme
 export function Button({
   className,
   variant = "default",
+  size = "default",
   ...props
-}: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "default" | "outline" | "ghost" }) {
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant?: "default" | "outline" | "ghost" | "destructive" | "coral" | "navy" | "brand-outline";
+  size?: "default" | "sm" | "lg";
+}) {
   const variants = {
-    default: "bg-neutral-900 text-white hover:bg-neutral-700 dark:bg-white dark:text-neutral-900",
+    default: "bg-[#1a1f3a] text-white hover:bg-[#151829] dark:bg-white dark:text-neutral-900 shadow-xs",
+    coral: "bg-[#ff6b4a] text-white hover:bg-[#ff8566] shadow-xs transition-all hover:translate-y-[-1px]",
+    navy: "bg-[#1a1f3a] text-white hover:bg-[#151829] shadow-xs",
+    "brand-outline": "border border-[#1a1f3a] text-[#1a1f3a] hover:bg-[#1a1f3a] hover:text-white dark:border-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-800",
     outline: "border border-neutral-300 text-neutral-900 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-100 dark:hover:bg-neutral-800",
     ghost: "text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800",
+    destructive: "bg-red-600 text-white hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700",
+  };
+  const sizes = {
+    default: "px-3.5 py-2 text-sm",
+    sm: "px-2.5 py-1.5 text-xs",
+    lg: "px-4 py-2.5 text-base",
   };
   return (
     <button
       className={cn(
-        "inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+        "inline-flex items-center justify-center gap-2 rounded-lg font-medium transition-all disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer",
         variants[variant],
+        sizes[size],
         className,
       )}
       {...props}
@@ -46,10 +60,13 @@ export function Button({
 
 const BADGE_TONES = {
   neutral: "bg-neutral-100 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300",
+  coral: "bg-[#ff6b4a]/10 text-[#ff6b4a] border border-[#ff6b4a]/25 dark:bg-[#ff6b4a]/20 dark:text-[#ff8566]",
+  navy: "bg-[#1a1f3a] text-white border border-[#2a3052]",
   green: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
   amber: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
   red: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
   blue: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
+  purple: "bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300",
 } as const;
 
 export function Badge({
@@ -60,7 +77,7 @@ export function Badge({
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium",
+        "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium tracking-tight",
         BADGE_TONES[tone],
         className,
       )}

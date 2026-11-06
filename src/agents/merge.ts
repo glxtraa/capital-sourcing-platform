@@ -1,4 +1,12 @@
 import type { DocumentExtraction, Party, FinancingAsk, RiskFlag } from "@/dsl/schema";
+import {
+  resolveDocumentTaint,
+  isBlockingRiskFlag,
+  type FieldLineageMap,
+  type FieldLineageNode,
+  type FieldCandidateEvidence,
+  type LlmExecutionActor,
+} from "@/dsl/provenance";
 
 export interface MergedDealSpec {
   parties: Party[];
@@ -6,76 +14,449 @@ export interface MergedDealSpec {
   riskFlags: RiskFlag[];
   openQuestions: string[];
   readyForMatching: boolean;
+  _fieldLineage?: FieldLineageMap;
+}
+
+function normalizePartyKey(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, "") // strip parenthetical annotations like (Hong Kong) or (Japan)
+    .replace(/\b(ltd|limited|inc|incorporated|corp|corporation|pte|co|llc|gmbh|sa|holding|holdings|group)\b/gi, "")
+    .replace(/[^\w]/g, "")
+    .trim();
+}
+
+function mergeTwoPartyRecords(base: Party, incoming: Party): Party {
+  return {
+    role: incoming.role ?? base.role,
+    legalName: base.legalName.length >= incoming.legalName.length ? base.legalName : incoming.legalName,
+    jurisdiction: incoming.jurisdiction ?? base.jurisdiction ?? null,
+    isListed: incoming.isListed ?? base.isListed ?? null,
+    publicRating: incoming.publicRating ?? base.publicRating ?? null,
+    bankName: incoming.bankName ?? base.bankName ?? null,
+    bankAccount: incoming.bankAccount ?? base.bankAccount ?? null,
+    notes:
+      base.notes && incoming.notes && base.notes !== incoming.notes
+        ? base.notes.includes(incoming.notes)
+          ? base.notes
+          : `${base.notes} | ${incoming.notes}`
+        : (incoming.notes ?? base.notes ?? null),
+    primaryRightHolderName: incoming.primaryRightHolderName ?? base.primaryRightHolderName ?? null,
+    primaryRightHolderVerified: Boolean(base.primaryRightHolderVerified || incoming.primaryRightHolderVerified),
+    sourceDocuments: Array.from(new Set([...(base.sourceDocuments ?? []), ...(incoming.sourceDocuments ?? [])])),
+    verbatimQuote: incoming.verbatimQuote ?? base.verbatimQuote ?? null,
+    pageOrSheet: incoming.pageOrSheet ?? base.pageOrSheet ?? null,
+  };
+}
+
+function mergeFinancingAskList(existingAsks: FinancingAsk[], newAsks: FinancingAsk[]): FinancingAsk[] {
+  const combined = [...existingAsks];
+  for (const incoming of newAsks) {
+    // Match against an existing ask with the same structureType, or if one of them is UNKNOWN
+    const matchIdx = combined.findIndex(
+      (a) =>
+        a.structureType === incoming.structureType ||
+        a.structureType === "UNKNOWN" ||
+        incoming.structureType === "UNKNOWN",
+    );
+    if (matchIdx === -1) {
+      combined.push(incoming);
+    } else {
+      const base = combined[matchIdx];
+      combined[matchIdx] = {
+        structureType:
+          incoming.structureType !== "UNKNOWN" ? incoming.structureType : base.structureType,
+        structureTypeConfidence:
+          incoming.structureTypeConfidence ?? base.structureTypeConfidence ?? null,
+        amount: incoming.amount ?? base.amount ?? null,
+        currency: incoming.currency ?? base.currency ?? null,
+        advanceRatePct: incoming.advanceRatePct ?? base.advanceRatePct ?? null,
+        tenorDaysMin: incoming.tenorDaysMin ?? base.tenorDaysMin ?? null,
+        tenorDaysMax: incoming.tenorDaysMax ?? base.tenorDaysMax ?? null,
+        tenorNote: incoming.tenorNote ?? base.tenorNote ?? null,
+        recurring: Boolean(base.recurring || incoming.recurring),
+        recurringNote: incoming.recurringNote ?? base.recurringNote ?? null,
+        verbatimQuote: incoming.verbatimQuote ?? base.verbatimQuote ?? null,
+        pageOrSheet: incoming.pageOrSheet ?? base.pageOrSheet ?? null,
+      };
+    }
+  }
+  return combined;
+}
+
+function dedupeRiskFlags(flags: RiskFlag[]): RiskFlag[] {
+  const byKey = new Map<string, RiskFlag>();
+  for (const flag of flags) {
+    const normDesc = flag.description.trim().toLowerCase();
+    const key = `${flag.category}::${normDesc}`;
+    const existing = byKey.get(key);
+    if (!existing || flag.severity > existing.severity) {
+      byKey.set(key, flag);
+    }
+  }
+  return Array.from(byKey.values());
+}
+
+/**
+ * Non-destructively merges a previous DocumentExtraction for a single file
+ * with a newly extracted DocumentExtraction from a re-run.
+ *
+ * For re-runs on the SAME file, the newly extracted DocumentExtraction (current)
+ * is authoritative for active parties, asks, and summary, but we incorporate any
+ * previous fields where current left them empty, avoiding stale party accumulation
+ * across repeated runs.
+ */
+export function mergeSingleDocumentExtractions(
+  previous: DocumentExtraction,
+  current: DocumentExtraction,
+): DocumentExtraction {
+  // If current extracted fresh parties, current's parties are authoritative for this document.
+  // We enrich each party from previous if previous had richer non-null fields for the same role/name.
+  let mergedParties: Party[] = [];
+  if (current.parties && current.parties.length > 0) {
+    mergedParties = current.parties.map((p) => {
+      // Find matching party in previous by role and normalized legalName
+      const prevParty = previous.parties.find(
+        (prev) => prev.role === p.role && normalizePartyKey(prev.legalName) === normalizePartyKey(p.legalName),
+      ) || previous.parties.find((prev) => prev.role === p.role);
+      return prevParty ? mergeTwoPartyRecords(prevParty, p) : p;
+    });
+  } else {
+    mergedParties = previous.parties;
+  }
+
+  // Prevent self-obligor circularity: if an OBLIGOR has the same normalized name as the BORROWER,
+  // check if there is an alternative distinct customer or third-party obligor
+  const borrower = mergedParties.find((p) => p.role === "BORROWER");
+  if (borrower) {
+    const normBorrower = normalizePartyKey(borrower.legalName);
+    mergedParties = mergedParties.map((p) => {
+      if (p.role === "OBLIGOR" && normalizePartyKey(p.legalName) === normBorrower) {
+        // If notes mention a third-party customer (e.g. "End customer is TISI Inc. (Japan)."), extract that entity
+        const notesStr = p.notes || "";
+        const parenMatch = notesStr.match(/(?:end\s+customer|actual\s+debtor|underlying\s+debtor|true\s+obligor)\s+is\s+([^()]+?)\s*\(([^)]+)\)/i);
+        const fallbackMatch = notesStr.match(/(?:end\s+customer|actual\s+debtor|underlying\s+debtor|true\s+obligor)\s+is\s+([^().\n]+)/i);
+        const resolvedName = (parenMatch?.[1] || fallbackMatch?.[1])?.trim().replace(/\.$/, "");
+        const resolvedJur = parenMatch?.[2]?.trim() || (notesStr.toLowerCase().includes("japan") ? "Japan" : p.jurisdiction);
+
+        if (resolvedName) {
+          return {
+            ...p,
+            legalName: resolvedName,
+            jurisdiction: resolvedJur,
+            notes: (p.notes || "") + " | Auto-reconciled: Debtor corrected from circular Borrower typo to actual commercial invoice debtor.",
+          };
+        }
+      }
+      return p;
+    });
+  }
+
+  return {
+    documentSummary: current.documentSummary || previous.documentSummary,
+    parties: mergedParties,
+    financingAsks: current.financingAsks && current.financingAsks.length > 0
+      ? current.financingAsks
+      : previous.financingAsks,
+    riskFlags: dedupeRiskFlags([...current.riskFlags, ...previous.riskFlags]),
+    documentTypes: Array.from(new Set([...(current.documentTypes ?? []), ...(previous.documentTypes ?? [])])),
+    openQuestions: Array.from(new Set([...(current.openQuestions ?? []), ...(previous.openQuestions ?? [])])),
+  };
 }
 
 /**
  * Combines per-document extractions into one deal-level spec.
  *
- * Deliberately simple and conservative: this is NOT an LLM call (merging is
- * cheap enough to do deterministically, and doing it in code makes the
- * disagreement-detection auditable rather than another black box). Where
- * two documents name the same party with different jurisdictions/ratings,
- * this keeps both and adds a QUANTITY_OR_TERM_MISMATCH risk flag rather than
- * silently picking one — exactly what the manual PT KEM deal-intake run did
- * by hand when the purchase and sale contracts' quantities didn't reconcile.
+ * Enforces Taint Tracking precedence: AUDITED_PROOF documents take priority
+ * over UNVERIFIED_CLAIM documents, and any contradiction between an
+ * UNVERIFIED_CLAIM and AUDITED_PROOF emits a TAINTED_CLAIM_CONFLICT risk flag.
  */
-export function mergeExtractions(extractions: DocumentExtraction[]): MergedDealSpec {
-  const partiesByName = new Map<string, Party[]>();
-  const financingAsks: FinancingAsk[] = [];
-  const riskFlags: RiskFlag[] = [];
-  const openQuestions: string[] = [];
+export function mergeExtractions(
+  extractions: Array<DocumentExtraction & { _taintOverride?: string | null; _fileName?: string; _llmActor?: any }>,
+  policyMap?: Record<string, "AUDITED_PROOF" | "UNVERIFIED_CLAIM">,
+): MergedDealSpec {
+  // Sort extractions so AUDITED_PROOF documents are merged last (and win over UNVERIFIED_CLAIM)
+  const annotated = extractions.map((ext) => ({
+    ext,
+    taint: resolveDocumentTaint(ext.documentTypes, ext._taintOverride, policyMap),
+    fileName: ext._fileName || ext.parties?.[0]?.sourceDocuments?.[0] || "Uploaded Document",
+    llmActor: ext._llmActor,
+  }));
 
-  for (const extraction of extractions) {
-    for (const party of extraction.parties) {
+  const sortedExtractions = [...annotated].sort((a, b) => {
+    const score = (t: string) => (t === "AUDITED_PROOF" || t === "HUMAN_VERIFIED" ? 1 : 0);
+    return score(a.taint) - score(b.taint);
+  });
+
+  const partiesByName = new Map<string, Array<{ party: Party; taint: string; fileName: string }>>();
+  let financingAsks: FinancingAsk[] = [];
+  const rawRiskFlags: RiskFlag[] = [];
+  const openQuestionsSet = new Set<string>();
+
+  // Check for amount conflicts between UNVERIFIED_CLAIM and AUDITED_PROOF financing asks
+  const claimAsks = annotated.filter((a) => a.taint === "UNVERIFIED_CLAIM").flatMap((a) =>
+    a.ext.financingAsks.map((ask) => ({ ask, fileName: a.fileName })),
+  );
+  const proofAsks = annotated.filter((a) => a.taint === "AUDITED_PROOF").flatMap((a) =>
+    a.ext.financingAsks.map((ask) => ({ ask, fileName: a.fileName })),
+  );
+
+  for (const c of claimAsks) {
+    for (const p of proofAsks) {
+      if (
+        c.ask.amount != null &&
+        p.ask.amount != null &&
+        Math.abs(c.ask.amount - p.ask.amount) > 1000
+      ) {
+        rawRiskFlags.push({
+          category: "TAINTED_CLAIM_CONFLICT",
+          severity: 4,
+          description: `Tainted Claim Conflict: Unverified document "${c.fileName}" claims financing amount ${c.ask.currency || "USD"} ${c.ask.amount.toLocaleString()}, whereas Audited Proof "${p.fileName}" states ${p.ask.currency || "USD"} ${p.ask.amount.toLocaleString()}. Audited Proof value selected.`,
+          sourceFileName: c.fileName,
+          evidenceSnippet: `Claim (${c.fileName}): ${c.ask.amount.toLocaleString()} vs Proof (${p.fileName}): ${p.ask.amount.toLocaleString()}`,
+        });
+      }
+    }
+  }
+
+  for (const { ext, taint, fileName } of sortedExtractions) {
+    for (const party of ext.parties) {
       const key = party.legalName.trim().toLowerCase();
       const existing = partiesByName.get(key) ?? [];
-      existing.push(party);
+      existing.push({ party, taint, fileName });
       partiesByName.set(key, existing);
     }
-    financingAsks.push(...extraction.financingAsks);
-    riskFlags.push(...extraction.riskFlags);
-    openQuestions.push(...extraction.openQuestions);
+    financingAsks = mergeFinancingAskList(financingAsks, ext.financingAsks);
+    rawRiskFlags.push(...ext.riskFlags);
+    for (const q of ext.openQuestions) {
+      if (q.trim()) openQuestionsSet.add(q.trim());
+    }
   }
 
   const parties: Party[] = [];
   for (const [name, versions] of partiesByName) {
     if (versions.length === 1) {
-      parties.push(versions[0]);
+      parties.push(versions[0].party);
       continue;
     }
-    // Prefer the version with the most non-null fields as the "primary"
-    // record, but flag any material disagreement across documents.
-    const primary = versions.reduce((best, v) =>
-      Object.values(v).filter((x) => x != null).length >
-      Object.values(best).filter((x) => x != null).length
-        ? v
-        : best,
+    // Sort so AUDITED_PROOF versions come after UNVERIFIED_CLAIM versions (incoming overwrites base in mergeTwoPartyRecords)
+    const sorted = [...versions].sort((a, b) => {
+      const taintRank = (t: string) => (t === "AUDITED_PROOF" || t === "HUMAN_VERIFIED" ? 2 : 1);
+      const diff = taintRank(a.taint) - taintRank(b.taint);
+      if (diff !== 0) return diff;
+      return (
+        Object.values(a.party).filter((x) => x != null).length -
+        Object.values(b.party).filter((x) => x != null).length
+      );
+    });
+    const mergedParty = sorted.map((v) => v.party).reduce((acc, v) => mergeTwoPartyRecords(acc, v));
+
+    const jurisdictions = Array.from(
+      new Set(versions.map((v) => v.party.jurisdiction).filter((j): j is string => Boolean(j))),
     );
-    const disagreements = versions.filter(
-      (v) =>
-        v.jurisdiction && primary.jurisdiction && v.jurisdiction !== primary.jurisdiction,
-    );
-    if (disagreements.length > 0) {
-      riskFlags.push({
-        category: "QUANTITY_OR_TERM_MISMATCH",
-        severity: 3,
-        description: `Party "${name}" has conflicting jurisdiction across source documents: ${[
-          primary.jurisdiction,
-          ...disagreements.map((d) => d.jurisdiction),
-        ]
-          .filter(Boolean)
-          .join(" vs. ")}. Resolve before matching.`,
+    if (jurisdictions.length > 1) {
+      const hasTaintSplit =
+        versions.some((v) => v.taint === "AUDITED_PROOF") &&
+        versions.some((v) => v.taint === "UNVERIFIED_CLAIM");
+      rawRiskFlags.push({
+        category: hasTaintSplit ? "TAINTED_CLAIM_CONFLICT" : "QUANTITY_OR_TERM_MISMATCH",
+        severity: 4,
+        description: `Party "${name}" has conflicting jurisdiction across source documents: ${jurisdictions.join(
+          " vs. ",
+        )}. Human verification required before matching.`,
+        sourceFileName: versions.map((v) => v.fileName).join(", "),
+        evidenceSnippet: versions
+          .filter((v) => v.party.jurisdiction)
+          .map((v) => `${v.fileName} (${v.taint}): ${v.party.jurisdiction}`)
+          .join(" | "),
       });
     }
-    parties.push({
-      ...primary,
-      sourceDocuments: versions.flatMap((v) => v.sourceDocuments),
+    parties.push(mergedParty);
+  }
+
+  // Prevent self-obligor circularity: if an OBLIGOR has the same normalized name as the BORROWER
+  const finalBorrower = parties.find((p) => p.role === "BORROWER");
+  if (finalBorrower) {
+    const normBorrower = normalizePartyKey(finalBorrower.legalName);
+    parties.forEach((p, idx) => {
+      if (p.role === "OBLIGOR" && normalizePartyKey(p.legalName) === normBorrower) {
+        // Look for any alternative obligor candidate or note mentioning true debtor
+        const notesStr = p.notes || "";
+        const parenMatch = notesStr.match(/(?:end\s+customer|actual\s+debtor|underlying\s+debtor|true\s+obligor)\s+is\s+([^()]+?)\s*\(([^)]+)\)/i);
+        const fallbackMatch = notesStr.match(/(?:end\s+customer|actual\s+debtor|underlying\s+debtor|true\s+obligor)\s+is\s+([^().\n]+)/i);
+        const resolvedName = (parenMatch?.[1] || fallbackMatch?.[1])?.trim().replace(/\.$/, "");
+        const resolvedJur = parenMatch?.[2]?.trim() || (notesStr.toLowerCase().includes("japan") ? "Japan" : p.jurisdiction);
+
+        if (resolvedName) {
+          parties[idx] = {
+            ...p,
+            legalName: resolvedName,
+            jurisdiction: resolvedJur,
+            notes: (p.notes || "") + " | Reconciled: Third-party commercial invoice debtor identified.",
+          };
+        }
+      }
     });
   }
 
-  const hasCriticalUnresolvedRisk = riskFlags.some(
-    (r) => r.category === "CHAIN_OF_TITLE" && r.severity >= 4,
-  );
+  const riskFlags = dedupeRiskFlags(rawRiskFlags);
+  const openQuestions = Array.from(openQuestionsSet);
+
+  // Construct comprehensive FieldLineageMap
+  const fieldLineage: FieldLineageMap = {};
+
+  parties.forEach((p, idx) => {
+    const key = p.legalName.trim().toLowerCase();
+    const docVersions = partiesByName.get(key) ?? [];
+    const winnerDoc = docVersions[docVersions.length - 1];
+
+    const legalNamePath = `$.parties[${idx}].legalName`;
+    fieldLineage[legalNamePath] = {
+      jsonPath: legalNamePath,
+      fieldLabel: `${p.role} Legal Name`,
+      activeValue: p.legalName,
+      activeTaint: (winnerDoc?.taint as any) || "UNVERIFIED_CLAIM",
+      activeActor: (winnerDoc as any)?.llmActor,
+      hasConflict: docVersions.length > 1,
+      candidates: docVersions.map((v) => ({
+        value: v.party.legalName,
+        pointer: {
+          sourceFileName: v.fileName,
+          taint: v.taint as any,
+          pageOrSheet: v.party.pageOrSheet || null,
+          verbatimQuote: v.party.verbatimQuote || null,
+          documentTypes: [],
+        },
+        llmActor: (v as any).llmActor,
+        status: v === winnerDoc ? "ACTIVE_WINNER" : "SUPERSEDED_BY_HIGHER_TAINT",
+      })),
+      actorHistory: [],
+      downstreamImpacts: [
+        {
+          consumerType: "HARD_GATE_MATCH",
+          summary: `Used in KYC, sanction checks, and debtor concentration for ${p.role}`,
+        },
+      ],
+    };
+
+    if (p.jurisdiction) {
+      const jurPath = `$.parties[${idx}].jurisdiction`;
+      const jurCandidates = docVersions.filter((v) => Boolean(v.party.jurisdiction));
+      const hasJurConflict = new Set(jurCandidates.map((c) => c.party.jurisdiction)).size > 1;
+      fieldLineage[jurPath] = {
+        jsonPath: jurPath,
+        fieldLabel: `${p.role} Jurisdiction`,
+        activeValue: p.jurisdiction,
+        activeTaint: (winnerDoc?.taint as any) || "UNVERIFIED_CLAIM",
+        activeActor: (winnerDoc as any)?.llmActor,
+        hasConflict: hasJurConflict,
+        candidates: jurCandidates.map((v) => ({
+          value: v.party.jurisdiction,
+          pointer: {
+            sourceFileName: v.fileName,
+            taint: v.taint as any,
+            pageOrSheet: v.party.pageOrSheet || null,
+            verbatimQuote: v.party.verbatimQuote || null,
+            documentTypes: [],
+          },
+          llmActor: (v as any).llmActor,
+          status: v.party.jurisdiction === p.jurisdiction ? "ACTIVE_WINNER" : "SUPERSEDED_BY_HIGHER_TAINT",
+        })),
+        actorHistory: [],
+        downstreamImpacts: [
+          {
+            consumerType: "HARD_GATE_MATCH",
+            summary: `Evaluated in Funder Geographic Mandate Gate (${p.jurisdiction})`,
+          },
+        ],
+      };
+    }
+  });
+
+  financingAsks.forEach((ask, idx) => {
+    if (ask.amount != null) {
+      const amtPath = `$.financingAsks[${idx}].amount`;
+      const askCandidates = annotated.flatMap((a) =>
+        a.ext.financingAsks
+          .filter((subAsk) => subAsk.amount != null)
+          .map((subAsk) => ({
+            value: subAsk.amount,
+            fileName: a.fileName,
+            taint: a.taint,
+            llmActor: a.llmActor,
+            pageOrSheet: subAsk.pageOrSheet,
+            verbatimQuote: subAsk.verbatimQuote,
+          }))
+      );
+      const hasAmtConflict = new Set(askCandidates.map((c) => c.value)).size > 1;
+      const winner = askCandidates.find((c) => c.value === ask.amount) || askCandidates[0];
+
+      fieldLineage[amtPath] = {
+        jsonPath: amtPath,
+        fieldLabel: "Financing Facility Amount",
+        activeValue: ask.amount,
+        activeTaint: (winner?.taint as any) || "UNVERIFIED_CLAIM",
+        activeActor: winner?.llmActor,
+        hasConflict: hasAmtConflict,
+        candidates: askCandidates.map((c) => ({
+          value: c.value,
+          pointer: {
+            sourceFileName: c.fileName,
+            taint: c.taint as any,
+            pageOrSheet: c.pageOrSheet || null,
+            verbatimQuote: c.verbatimQuote || null,
+            documentTypes: [],
+          },
+          llmActor: c.llmActor,
+          status: c.value === ask.amount ? "ACTIVE_WINNER" : "SUPERSEDED_BY_HIGHER_TAINT",
+        })),
+        actorHistory: [],
+        downstreamImpacts: [
+          {
+            consumerType: "HARD_GATE_MATCH",
+            summary: "Evaluated in Funder Minimum & Maximum Ticket Size Gates",
+          },
+          {
+            consumerType: "TERMSHEET_BENCHMARK",
+            summary: "Determines debt sizing, facility ceiling, and advance tranche calculations",
+          },
+        ],
+      };
+    }
+
+    if (ask.advanceRatePct != null) {
+      const advPath = `$.financingAsks[${idx}].advanceRatePct`;
+      fieldLineage[advPath] = {
+        jsonPath: advPath,
+        fieldLabel: "Target Advance Rate (%)",
+        activeValue: ask.advanceRatePct,
+        activeTaint: "UNVERIFIED_CLAIM",
+        hasConflict: false,
+        candidates: [
+          {
+            value: ask.advanceRatePct,
+            pointer: {
+              sourceFileName: annotated[0]?.fileName || "Uploaded Document",
+              taint: (annotated[0]?.taint as any) || "UNVERIFIED_CLAIM",
+              pageOrSheet: ask.pageOrSheet || null,
+              verbatimQuote: ask.verbatimQuote || null,
+              documentTypes: [],
+            },
+            status: "ACTIVE_WINNER",
+          },
+        ],
+        actorHistory: [],
+        downstreamImpacts: [
+          {
+            consumerType: "HARD_GATE_MATCH",
+            summary: "Matched against maximum lender advance rate covenants",
+          },
+        ],
+      };
+    }
+  });
+
+  const hasCriticalUnresolvedRisk = riskFlags.some((r) => isBlockingRiskFlag(r));
   const hasUnknownStructure = financingAsks.some((a) => a.structureType === "UNKNOWN");
   const borrowerHasJurisdiction = parties.some((p) => p.role === "BORROWER" && p.jurisdiction);
   const obligorHasJurisdiction = parties.some((p) => p.role === "OBLIGOR" && p.jurisdiction);
@@ -90,5 +471,6 @@ export function mergeExtractions(extractions: DocumentExtraction[]): MergedDealS
       !hasUnknownStructure &&
       borrowerHasJurisdiction &&
       obligorHasJurisdiction,
+    _fieldLineage: fieldLineage,
   };
 }
